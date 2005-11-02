@@ -2,8 +2,7 @@
 /**********************************************************************
  * plphp.c - PHP as a procedural language for PostgreSQL
  *
- * This software is copyright by Sergej Sergeev aka g.gRay
- * sergej@commandprompt.com
+ * This software is copyright (c) Command Prompt Inc.
  *
  * The author hereby grants permission to use, copy, modify,
  * distribute, and license this software and its documentation for any
