@@ -1,0 +1,1 @@
+SELECT php_arr_in(1,ARRAY[[1, 10], [2, 4]]);

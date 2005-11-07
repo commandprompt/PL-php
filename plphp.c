@@ -1,4 +1,3 @@
-
 /**********************************************************************
  * plphp.c - PHP as a procedural language for PostgreSQL
  *
@@ -35,6 +34,10 @@
  * 1. Check all palloc() and malloc() calls: where are they freed,
  * and what MemoryContext management should we be doing?
  *
+ * 2. Add a non-stub validator function.
+ *
+ * 3. Change all string manipulation to StringInfo.
+ *
  *********************************************************************
  */
 
@@ -55,6 +58,12 @@
 #include "utils/memutils.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
+
+#undef PACKAGE_BUGREPORT
+#undef PACKAGE_NAME
+#undef PACKAGE_STRING
+#undef PACKAGE_TARNAME
+#undef PACKAGE_VERSION
 
 /* PHP stuff */
 #include "php.h"
@@ -80,7 +89,11 @@
 							 PHP_INI_SYSTEM, PHP_INI_STAGE_ACTIVATE);
 
 /*
- * apache simbols resolving, for linking to apache module (libphp*.so)
+ * These symbols are needed by the Apache module (libphp*.so).  We don't
+ * actually use those, but they are needed so that the linker can do its
+ * job without complaining.
+ *
+ * FIXME -- this looks like a mighty hacky way of doing things.
 */
 void	   *ap_loaded_modules = NULL;
 void	   *unixd_config = NULL;
@@ -124,6 +137,10 @@ void	   *ap_set_last_modified = NULL;
 void	   *ap_add_common_vars = NULL;
 void	   *apr_pool_userdata_get = NULL;
 
+/*
+ * Return types.  Why on earth is this a bitmask?  Beats me.
+ * We should have separate flags instead.
+ */
 typedef enum pl_type
 {
 	PL_TUPLE = 1 << 0,
@@ -131,7 +148,6 @@ typedef enum pl_type
 	PL_ARRAY = 1 << 2,
 	PL_PSEUDO = 1 << 3
 } pl_type;
-
 
 /*
  * The information we cache about loaded procedures
@@ -166,7 +182,11 @@ static zval *srf_phpret = NULL;			/* keep returned value */
 static void plphp_init_all(void);
 void		plphp_init(void);
 
-Datum		plphp_call_handler(PG_FUNCTION_ARGS);
+PG_FUNCTION_INFO_V1(plphp_call_handler);
+Datum plphp_call_handler(PG_FUNCTION_ARGS);
+
+PG_FUNCTION_INFO_V1(plphp_validator);
+Datum plphp_validator(PG_FUNCTION_ARGS);
 
 static Datum plphp_func_handler(PG_FUNCTION_ARGS);
 static Datum plphp_trigger_handler(PG_FUNCTION_ARGS);
@@ -183,16 +203,6 @@ zval	   *plphp_hash_from_tuple(HeapTuple, TupleDesc);
 
 ZEND_FUNCTION(spi_exec_query);
 ZEND_FUNCTION(spi_fetch_row);
-
-/*
- * plphp_call_handler		- This is the only visible function
- *				  of the PL interpreter. The PostgreSQL
- *				  function manager and trigger manager
- *				  call this function for execution of
- *				  php procedures.
- */
-
-PG_FUNCTION_INFO_V1(plphp_call_handler);
 
 /*
  * This routine is a crock, and so is everyplace that calls it.  The problem
@@ -214,8 +224,10 @@ perm_fmgr_info(Oid functionId, FmgrInfo *finfo)
 
 /* need for plphp module work */
 static void
-sapi_plphp_send_header(sapi_header_struct * sapi_header, void *server_context TSRMLS_DC)		
+sapi_plphp_send_header(sapi_header_struct* sapi_header,
+					   void *server_context TSRMLS_DC)		
 {
+
 }
 
 static inline size_t
@@ -256,11 +268,7 @@ sapi_plphp_ub_write(const char *str, uint str_length TSRMLS_DC)
 static int
 php_plphp_startup(sapi_module_struct *sapi_module)
 {
-	if (php_module_startup(sapi_module, NULL, 0) == FAILURE)
-	{
-		return FAILURE;
-	}
-	return SUCCESS;
+	return php_module_startup(sapi_module, NULL, 0);
 }
 
 static void
@@ -290,7 +298,7 @@ zend_module_entry spi_module_entry = {
 
 static sapi_module_struct plphp_sapi_module = {
 	"plphp",					/* name */
-	"PHP UDF PostgreSQL ",		/* pretty name */
+	"PL/php PostgreSQL Handler",/* pretty name */
 
 	php_plphp_startup,			/* startup */
 	php_module_shutdown_wrapper,/* shutdown */
@@ -370,38 +378,40 @@ plphp_init(void)
 	plphp_first_call = false;
 
 
+	zend_register_functions(
 #if PHP_MAJOR_VERSION == 5
-	zend_register_functions(NULL, spi_functions, NULL,
-							MODULE_PERSISTENT TSRMLS_CC);
-# else
-	zend_register_functions(spi_functions, NULL, MODULE_PERSISTENT TSRMLS_CC);
+							NULL,
 #endif
+							spi_functions, NULL,
+							MODULE_PERSISTENT TSRMLS_CC);
 
 	PG(during_request_startup) = true;
 
 	zend_first_try
 	{
-		/*
-		 * Set some defaults
-		 */
+		/* Set some defaults */
 		SG(options) |= SAPI_OPTION_NO_CHDIR;
-		/*
-		 * here is the place for hard coded defaults which cannot be overwritten in the ini file
-		 */
+
+		/* Hard coded defaults which cannot be overwritten in the ini file */
 		INI_HARDCODED("register_argc_argv", "0");
 		INI_HARDCODED("html_errors", "0");
 		INI_HARDCODED("implicit_flush", "1");
 		INI_HARDCODED("max_execution_time", "0");
 
-		zend_uv.html_errors = false;	/* tell the engine we're in non-html mode */
-		CG(in_compilation) = false;		/* not initialized but needed for several options */
+		/* tell the engine we're in non-html mode */
+		zend_uv.html_errors = false;
+
+		/* not initialized but needed for several options */
+		CG(in_compilation) = false;
+
 		EG(uninitialized_zval_ptr) = NULL;
 
 		if (php_request_startup(TSRMLS_C) == FAILURE)
 		{
 			SG(headers_sent) = 1;
 			SG(request_info).no_headers = 1;
-			elog(WARNING, "Could not startup plphp request.\n");		/*use postgreSQL log */
+			/* Use Postgres log */
+			elog(WARNING, "Could not startup plphp request.\n");
 		}
 
 		CG(interactive) = true;
@@ -417,6 +427,12 @@ plphp_init(void)
 	zend_end_try();
 }
 
+/*
+ * plphp_call_handler
+ *
+ * The visible function of the PL interpreter.  The PostgreSQL function manager
+ * and trigger manager call this function for execution of php procedures.
+ */
 Datum
 plphp_call_handler(PG_FUNCTION_ARGS)
 {
@@ -450,6 +466,15 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 	}
 
 	return retval;
+}
+
+Datum
+plphp_validator(PG_FUNCTION_ARGS)
+{
+	/* Just a stub for now */
+
+	/* The result of a validator is ignored */
+	PG_RETURN_VOID();
 }
 
 static zval *
