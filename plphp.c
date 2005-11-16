@@ -59,6 +59,10 @@
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
+/*
+ * These are defined again in php.h, so undef them to avoid some
+ * cpp warnings.
+ */
 #undef PACKAGE_BUGREPORT
 #undef PACKAGE_NAME
 #undef PACKAGE_STRING
@@ -188,10 +192,10 @@ Datum plphp_call_handler(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(plphp_validator);
 Datum plphp_validator(PG_FUNCTION_ARGS);
 
-static Datum plphp_func_handler(PG_FUNCTION_ARGS);
-static Datum plphp_trigger_handler(PG_FUNCTION_ARGS);
+static Datum plphp_func_handler(FunctionCallInfo fcinfo);
+static Datum plphp_trigger_handler(FunctionCallInfo fcinfo);
 
-static plphp_proc_desc *compile_plphp_function(Oid, int);
+static plphp_proc_desc *plphp_compile_function(Oid, int);
 static zval *plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc);
 static zval *plphp_call_php_func(plphp_proc_desc *, FunctionCallInfo);
 static zval *plphp_call_php_trig(plphp_proc_desc *, FunctionCallInfo, zval *);
@@ -201,7 +205,8 @@ static int	plphp_get_rows_num(zval *);
 static zval *plphp_get_row(zval *, int);
 zval	   *plphp_hash_from_tuple(HeapTuple, TupleDesc);
 
-static void plphp_error_handler(int type, const char *filename, const uint lineno,
+static void plphp_elog(int elevel, char *fmt, ...);
+static void plphp_error_cb(int type, const char *filename, const uint lineno,
 								  const char *fmt, va_list args);
 
 ZEND_FUNCTION(spi_exec_query);
@@ -240,9 +245,8 @@ sapi_cli_single_write(const char *str, uint str_length)
 
 	ret = write(STDOUT_FILENO, str, str_length);
 	if (ret <= 0)
-	{
 		return 0;
-	}
+
 	return ret;
 }
 
@@ -257,9 +261,8 @@ sapi_plphp_ub_write(const char *str, uint str_length TSRMLS_DC)
 	{
 		ret = sapi_cli_single_write(ptr, remaining);
 		if (!ret)
-		{
 			php_handle_aborted_connection();
-		}
+
 		ptr += ret;
 		remaining -= ret;
 	}
@@ -280,6 +283,7 @@ php_plphp_log_messages(char *message)
 	elog(LOG, "plphp: %s", message);
 }
 
+/* FIXME -- this is a misnomer now. */
 zend_function_entry spi_functions[] = {
 	ZEND_FE(spi_exec_query, NULL)
 	ZEND_FE(spi_fetch_row, NULL)
@@ -287,6 +291,7 @@ zend_function_entry spi_functions[] = {
 	{NULL, NULL, NULL}
 };
 
+/* FIXME -- this thing is unused ... */
 zend_module_entry spi_module_entry = {
 	STANDARD_MODULE_HEADER,
 	"SPI module",
@@ -334,49 +339,53 @@ static sapi_module_struct plphp_sapi_module = {
 
 /*
  * plphp_init_all()		- Initialize all
+ *
+ * XXX This is called each time a function is invoked.
  */
 static void
 plphp_init_all(void)
 {
-
-	/************************************************************
-	 * Execute postmaster-startup safe initialization
-	 ************************************************************/
+	/* Execute postmaster-startup safe initialization */
 	if (plphp_first_call)
 		plphp_init();
 
-	/************************************************************
+	/*
 	 * Any other initialization that must be done each time a new
-	 * backend starts -- currently none
-	 ************************************************************/
+	 * backend starts -- currently none.
+	 */
 }
 
+/*
+ * This function must not be static, so that it can be used in
+ * preload_libraries.  If it is, it will be called by postmaster;
+ * otherwise it will be called by each backend the first time a
+ * function is called.
+ */
 void
 plphp_init(void)
 {
-	/*
-	 * Do initialization only once
-	 */
-
+	/* Do initialization only once */
 	if (!plphp_first_call)
 		return;
 
-	plphp_sapi_module.phpinfo_as_text = 1;		/*output without html tags */
+	/* Omit HTML tags from output */
+	plphp_sapi_module.phpinfo_as_text = 1;
 	sapi_startup(&plphp_sapi_module);
+
 	if (php_module_startup(&plphp_sapi_module, NULL, 0) == FAILURE)
-	{
-		/*
-		 * there is no way to see if we must call zend_ini_deactivate()
-		 * since we cannot check if EG(ini_directives) has been initialised
-		 * because the executor's constructor does not set initialize it.
-		 * Apart from that there seems no need for zend_ini_deactivate() yet.
-		 * So we goto out_err.
-		 */
-		elog(ERROR, "Could not startup plphp module");	/* use postgreSQL log for error */
-	}
+		elog(ERROR, "Could not startup plphp module");	
+
 	/*
-	 * init procedure cache
+	 * FIXME -- Figure out what this comment is supposed to mean:
+	 *
+	 * There is no way to see if we must call zend_ini_deactivate()
+	 * since we cannot check if EG(ini_directives) has been initialised
+	 * because the executor's constructor does not initialize it.
+	 * Apart from that there seems no need for zend_ini_deactivate() yet.
+	 * So we error out.
 	 */
+
+	/* Init procedure cache */
 	MAKE_STD_ZVAL(plphp_proc_array);
 	array_init(plphp_proc_array);
 	plphp_first_call = false;
@@ -404,9 +413,6 @@ plphp_init(void)
 		/* tell the engine we're in non-html mode */
 		zend_uv.html_errors = false;
 
-		/* HACK -- this should probably be set elsewhere ... */
-		zend_error_cb = *plphp_error_handler;
-
 		/* not initialized but needed for several options */
 		CG(in_compilation) = false;
 
@@ -424,11 +430,12 @@ plphp_init(void)
 		PG(during_request_startup) = true;
 		plphp_first_call = false;
 
+		zend_error_cb = plphp_error_cb;
 	}
 	zend_catch
 	{
 		plphp_first_call = false;
-		elog(ERROR, "plphp: fatal error");
+		elog(ERROR, "fatal error during PL/php initialization");
 	}
 	zend_end_try();
 }
@@ -606,9 +613,7 @@ plphp_get_pelem(zval * array, char *key)
 			if (Z_TYPE_P(element[0]) != IS_ARRAY)
 			{
 				if (strcasecmp(pos->arKey, key) == 0)
-				{
 					return element[0];
-				}
 			}
 		}
 	}
@@ -638,9 +643,7 @@ plphp_get_elem(zval * array, char *key)
 			return ret;
 		}
 		else if (Z_TYPE_P(element) == IS_STRING)
-		{
 			return element->value.str.val;
-		}
 	}
 	return NULL;
 }
@@ -802,7 +805,7 @@ plphp_convert_to_pg_array(zval * array, char *buffer)
 }
 
 static HeapTuple
-plphp_modify_tuple(zval * pltd, TriggerData *tdata)
+plphp_modify_tuple(zval *pltd, TriggerData *tdata)
 {
 	zval	   *plntup;
 	char	  **plkeys;
@@ -900,16 +903,15 @@ plphp_modify_tuple(zval * pltd, TriggerData *tdata)
 }
 
 /*
- * Build the arguments for the trigger function.
+ * Build the $_TD array for the trigger function.
  */
 static zval *
 plphp_trig_build_args(FunctionCallInfo fcinfo)
 {
-	zval	   *retval;
-	int			i;
-
-	TriggerData *tdata;
-	TupleDesc	tupdesc;
+	TriggerData	   *tdata;
+	TupleDesc		tupdesc;
+	zval		   *retval;
+	int				i;
 
 	MAKE_STD_ZVAL(retval);
 	array_init(retval);
@@ -922,45 +924,54 @@ plphp_trig_build_args(FunctionCallInfo fcinfo)
 	add_assoc_string(retval, "relid",
 					 DatumGetCString(DirectFunctionCall1
 									 (oidout,
-									  ObjectIdGetDatum(tdata->tg_relation->
-													   rd_id))), 1);
+									  ObjectIdGetDatum(tdata->tg_relation->rd_id))),
+					 1);
 	add_assoc_string(retval, "relname", SPI_getrelname(tdata->tg_relation), 1);
 
-	/* NEW and OLD as appropiate */
+	/* EVENT */
 	if (TRIGGER_FIRED_BY_INSERT(tdata->tg_event))
-	{
-		zval	   *hashref;
-
 		add_assoc_string(retval, "event", "INSERT", 1);
-		hashref = plphp_build_tuple_argument(tdata->tg_trigtuple, tupdesc);
-		zend_hash_update(retval->value.ht, "new", strlen("new") + 1,
-						 (void *) &hashref, sizeof(zval *), NULL);
-	}
 	else if (TRIGGER_FIRED_BY_DELETE(tdata->tg_event))
-	{
-		zval	   *hashref;
-
 		add_assoc_string(retval, "event", "DELETE", 1);
-		hashref = plphp_build_tuple_argument(tdata->tg_trigtuple, tupdesc);
-		zend_hash_update(retval->value.ht, "old", strlen("old") + 1,
-						 (void *) &hashref, sizeof(zval *), NULL);
-	}
 	else if (TRIGGER_FIRED_BY_UPDATE(tdata->tg_event))
-	{
-		zval	   *hashref;
-
 		add_assoc_string(retval, "event", "UPDATE", 1);
-
-		hashref = plphp_build_tuple_argument(tdata->tg_newtuple, tupdesc);
-		zend_hash_update(retval->value.ht, "new", strlen("new") + 1,
-						 (void *) &hashref, sizeof(zval *), NULL);
-
-		hashref = plphp_build_tuple_argument(tdata->tg_trigtuple, tupdesc);
-		zend_hash_update(retval->value.ht, "old", strlen("old") + 1,
-						 (void *) &hashref, sizeof(zval *), NULL);
-	}
 	else
 		elog(ERROR, "unknown firing event for trigger function");
+
+	/* NEW and OLD as appropiate */
+	if (TRIGGER_FIRED_FOR_ROW(tdata->tg_event))
+	{
+		if (TRIGGER_FIRED_BY_INSERT(tdata->tg_event))
+		{
+			zval	   *hashref;
+
+			hashref = plphp_build_tuple_argument(tdata->tg_trigtuple, tupdesc);
+			zend_hash_update(retval->value.ht, "new", strlen("new") + 1,
+							 (void *) &hashref, sizeof(zval *), NULL);
+		}
+		else if (TRIGGER_FIRED_BY_DELETE(tdata->tg_event))
+		{
+			zval	   *hashref;
+
+			hashref = plphp_build_tuple_argument(tdata->tg_trigtuple, tupdesc);
+			zend_hash_update(retval->value.ht, "old", strlen("old") + 1,
+							 (void *) &hashref, sizeof(zval *), NULL);
+		}
+		else if (TRIGGER_FIRED_BY_UPDATE(tdata->tg_event))
+		{
+			zval	   *hashref;
+
+			hashref = plphp_build_tuple_argument(tdata->tg_newtuple, tupdesc);
+			zend_hash_update(retval->value.ht, "new", strlen("new") + 1,
+							 (void *) &hashref, sizeof(zval *), NULL);
+
+			hashref = plphp_build_tuple_argument(tdata->tg_trigtuple, tupdesc);
+			zend_hash_update(retval->value.ht, "old", strlen("old") + 1,
+							 (void *) &hashref, sizeof(zval *), NULL);
+		}
+		else
+			elog(ERROR, "unknown firing event for trigger function");
+	}
 
 	/* ARGC and ARGS */
 	add_assoc_long(retval, "argc", tdata->tg_trigger->tgnargs);
@@ -1002,64 +1013,66 @@ plphp_trig_build_args(FunctionCallInfo fcinfo)
  * plphp_trigger_handler()		- Handler for trigger function calls
  */
 static Datum
-plphp_trigger_handler(PG_FUNCTION_ARGS)
+plphp_trigger_handler(FunctionCallInfo fcinfo)
 {
-	zval	   *phpret = NULL;
-	zval	   *zTrigData = NULL;
+	Datum		retval = 0;
+	char	   *srv;
+	zval	   *phpret,
+			   *zTrigData;
+	TriggerData *trigdata;
 	plphp_proc_desc *desc;
-	Datum		retval;
 
 	/*
 	 * Find or compile the function
 	 */
-	desc = compile_plphp_function(fcinfo->flinfo->fn_oid, true);
+	desc = plphp_compile_function(fcinfo->flinfo->fn_oid, true);
+
 	PG(safe_mode) = desc->lanpltrusted;
 
 	zTrigData = plphp_trig_build_args(fcinfo);
 	phpret = plphp_call_php_trig(desc, fcinfo, zTrigData);
+	if (!phpret)
+		elog(ERROR, "error during execution of function %s", desc->proname);
 
 	/*
-	 * Disconnect from SPI manager and then create the return
-	 * values datum (if the input function does a palloc for it
-	 * this must not be allocated in the SPI memory context
-	 * because SPI_finish would free it).
+	 * Disconnect from SPI manager and then create the return values datum (if
+	 * the input function does a palloc for it this must not be allocated in
+	 * the SPI memory context because SPI_finish would free it).
 	 */
 	if (SPI_finish() != SPI_OK_FINISH)
 		ereport(ERROR,
 				(errcode(ERRCODE_CONNECTION_DOES_NOT_EXIST),
 				 errmsg("could not disconnect from SPI manager")));
 
-	retval = (Datum) 0;
 
-	if (phpret)
+	trigdata = (TriggerData *) fcinfo->context;
+
+	/*
+	 * In a BEFORE trigger, compute the return value.  In an AFTER trigger
+	 * it'll be ignored, so don't bother.
+	 */
+	if (TRIGGER_FIRED_BEFORE(trigdata->tg_event))
 	{
-		HeapTuple	trv = NULL;
-		TriggerData *trigdata = (TriggerData *) fcinfo->context;
-		char	   *srv;
-
-		/* FIXME -- why do all this for an AFTER trigger? */
-
 		switch (phpret->type)
 		{
 			case IS_STRING:
 				srv = phpret->value.str.val;
 				if (strcasecmp(srv, "SKIP") == 0)
-					trv = NULL;
+				{
+					/* do nothing */
+					break;
+				}
 				else if (strcasecmp(srv, "MODIFY") == 0)
 				{
 					if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
-					{
-						trv = plphp_modify_tuple(zTrigData, trigdata);
-						retval = PointerGetDatum(trv);
-					}
+						retval = PointerGetDatum(plphp_modify_tuple(zTrigData,
+																	trigdata));
 					else if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-					{
-						trv = plphp_modify_tuple(zTrigData, trigdata);
-						retval = PointerGetDatum(trv);
-					}
+						retval = PointerGetDatum(plphp_modify_tuple(zTrigData,
+																	trigdata));
 					else if (TRIGGER_FIRED_BY_DELETE(trigdata->tg_event))
 					{
-						trv = NULL;
+						/* do nothing */;
 						elog(WARNING,
 							 "ignoring modified tuple in DELETE trigger");
 					}
@@ -1067,12 +1080,9 @@ plphp_trigger_handler(PG_FUNCTION_ARGS)
 						elog(ERROR, "unknown event in trigger function");
 				}
 				else
-				{
-					trv = NULL;
-					ereport(ERROR,
-							(errcode(ERRCODE_SYNTAX_ERROR),
-							 errmsg("expected trigger to return 'SKIP' or 'MODIFY'")));
-				}
+					plphp_elog(ERROR,
+							   "expected trigger function to return NULL, "
+							   "'SKIP' or 'MODIFY'");
 				break;
 			case IS_NULL:
 				if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
@@ -1081,17 +1091,14 @@ plphp_trigger_handler(PG_FUNCTION_ARGS)
 					retval = (Datum) trigdata->tg_newtuple;
 				else if (TRIGGER_FIRED_BY_DELETE(trigdata->tg_event))
 					retval = (Datum) trigdata->tg_trigtuple;
-
 				break;
 			default:
-				ereport(ERROR,
-						(errcode(ERRCODE_DATATYPE_MISMATCH),
-						 errmsg("expected trigger to return NULL, 'SKIP' "
-								"or 'MODIFY'")));
+				plphp_elog(ERROR,
+						   "expected trigger function to return NULL, "
+						   "'SKIP' or 'MODIFY'");
+				break;
 		}
 	}
-	else
-		elog(ERROR, "error during execution of function %s", desc->proname);
 
 	return retval;
 }
@@ -1100,7 +1107,7 @@ plphp_trigger_handler(PG_FUNCTION_ARGS)
  * plphp_func_handler()		- Handler for regular function calls
  */
 static Datum
-plphp_func_handler(PG_FUNCTION_ARGS)
+plphp_func_handler(FunctionCallInfo fcinfo)
 {
 	zval	   *phpret = NULL;
 	plphp_proc_desc *desc;
@@ -1110,7 +1117,7 @@ plphp_func_handler(PG_FUNCTION_ARGS)
 	/*
 	 * Find or compile the function
 	 */
-	desc = compile_plphp_function(fcinfo->flinfo->fn_oid, false);
+	desc = plphp_compile_function(fcinfo->flinfo->fn_oid, false);
 
 	PG(safe_mode) = desc->lanpltrusted;
 
@@ -1118,9 +1125,7 @@ plphp_func_handler(PG_FUNCTION_ARGS)
 	 * Call the PHP function if not returning set
 	 */
 	if (!(desc->ret_type & PL_SET))
-	{
 		phpret = plphp_call_php_func(desc, fcinfo);
-	}
 	else
 	{
 		if (SRF_IS_FIRSTCALL())
@@ -1129,10 +1134,9 @@ plphp_func_handler(PG_FUNCTION_ARGS)
 	}
 
 	/*
-	 * Disconnect from SPI manager and then create the return
-	 * values datum (if the input function does a palloc for it
-	 * this must not be allocated in the SPI memory context
-	 * because SPI_finish would free it).
+	 * Disconnect from SPI manager and then create the return values datum (if
+	 * the input function does a palloc for it this must not be allocated in
+	 * the SPI memory context because SPI_finish would free it).
 	 */
 	if (SPI_finish() != SPI_OK_FINISH)
 		ereport(ERROR,
@@ -1158,13 +1162,14 @@ plphp_func_handler(PG_FUNCTION_ARGS)
 	{
 		switch (phpret->type)
 		{
+			/* XXX rewrite this stuff using StringInfo */
 			case IS_LONG:
 				retvalbuffer = (char *) palloc(256);
-				sprintf(retvalbuffer, "%ld", phpret->value.lval);
+				snprintf(retvalbuffer, 256, "%ld", phpret->value.lval);
 				break;
 			case IS_DOUBLE:
 				retvalbuffer = (char *) palloc(256);
-				sprintf(retvalbuffer, "%e", phpret->value.dval);
+				snprintf(retvalbuffer, 256, "%e", phpret->value.dval);
 				break;
 			case IS_STRING:
 				retvalbuffer = (char *) palloc(phpret->value.str.len + 1);
@@ -1193,9 +1198,6 @@ plphp_func_handler(PG_FUNCTION_ARGS)
 
 					if (desc->ret_type & PL_PSEUDO)
 					{
-						ReturnSetInfo *rsinfo;
-
-						rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 						td = plphp_get_function_tupdesc(desc->ret_oid,
 									  					(ReturnSetInfo *)
 														fcinfo->resultinfo);
@@ -1203,11 +1205,8 @@ plphp_func_handler(PG_FUNCTION_ARGS)
 					else
 						td = lookup_rowtype_tupdesc(desc->ret_oid, (int32) - 1);
 
-					/* FIXME -- why is this not an elog()? */
 					if (!td)
-						ereport(ERROR,
-								(errcode(ERRCODE_SYNTAX_ERROR),
-								 errmsg("no TupleDesc info available")));
+						plphp_elog(ERROR, "no TupleDesc info available");
 
 					values = (char **) palloc(td->natts * sizeof(char *));
 
@@ -1229,18 +1228,17 @@ plphp_func_handler(PG_FUNCTION_ARGS)
 				else if (desc->ret_type & PL_SET)
 					retval = plphp_srf_handler(fcinfo, desc);
 				else
-					elog(ERROR,
-						 "this plphp function cannot return arrays to PostgreSQL.");
+					elog(ERROR, "this plphp function cannot return arrays");
 				break;
 			case IS_NULL:
 				fcinfo->isnull = true;
 				break;
 			default:
 				elog(WARNING,
-					 "plphp functions cannot return this type %i to PostgreSQL.",
+					 "plphp functions cannot return type %i",
 					 phpret->type);
 				fcinfo->isnull = true;
-
+				break;
 		}
 	}
 	else
@@ -1261,13 +1259,16 @@ plphp_func_handler(PG_FUNCTION_ARGS)
 	return retval;
 }
 
+/*
+ * plphp_hash_from_tuple
+ *
+ *		 Build a PHP hash from a tuple
+ */
 zval *
 plphp_hash_from_tuple(HeapTuple tuple, TupleDesc tupdesc)
 {
 	int			i;
 	char	   *attname = NULL;
-	char	   *attdata = NULL;
-
 	zval	   *array;
 
 	MAKE_STD_ZVAL(array);
@@ -1275,74 +1276,18 @@ plphp_hash_from_tuple(HeapTuple tuple, TupleDesc tupdesc)
 
 	for (i = 0; i < tupdesc->natts; i++)
 	{
+		char *attdata;
 
-		/************************************************************
-		* Get the attribute name
-		************************************************************/
+		/* Get the attribute name */
 		attname = tupdesc->attrs[i]->attname.data;
 
-		/************************************************************
-		* Get the attributes value
-		************************************************************/
-		attdata = SPI_getvalue(tuple, tupdesc, i + 1);
-		if (attdata)
+		/* and get its value */
+		if ((attdata = SPI_getvalue(tuple, tupdesc, i + 1)) != NULL)
 			add_assoc_string(array, attname, attdata, 1);
 		else
 			add_assoc_null(array, attname);
 	}
 	return array;
-}
-
-ZEND_FUNCTION(pg_raise)
-{
-	char	   *level = NULL,
-			   *message = NULL;
-	int			level_len,
-				message_len,
-				elevel;
-
-	if (ZEND_NUM_ARGS() != 2)
-	{
-		WRONG_PARAM_COUNT;
-		ereport(ERROR,
-				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("wrong number of arguments to pg_raise")));
-
-	}
-
-	if (zend_parse_parameters
-		(ZEND_NUM_ARGS() TSRMLS_CC, "ss",
-		 &level, &level_len,
-		 &message, &message_len) == FAILURE)
-	{
-		elog(ERROR, "cannot parse parameters in %s",
-				   get_active_function_name(TSRMLS_C));
-	}
-
-	if (strcasecmp(level, "ERROR") == 0)
-		elevel = ERROR;
-	else if (strcasecmp(level, "WARNING") == 0)
-		elevel = WARNING;
-	else if (strcasecmp(level, "NOTICE") == 0)
-		elevel = NOTICE;
-	else if (strcasecmp(level, "INFO") == 0)
-		elevel = INFO;
-	else if (strcasecmp(level, "LOG") == 0)
-		elevel = LOG;
-	else if (strcasecmp(level, "DEBUG") == 0)
-		elevel = DEBUG1;
-	else
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("incorrect log level"),
-				 errhint("Accepted log levels are ERROR, WARNING, NOTICE, "
-						 "INFO, LOG and DEBUG")));
-		/* not reached, but keep compiler quiet */
-		return;
-	}
-
-	elog(elevel, message);
 }
 
 ZEND_FUNCTION(spi_exec_query)
@@ -1359,13 +1304,9 @@ ZEND_FUNCTION(spi_exec_query)
 
 	if (ZEND_NUM_ARGS() == 2)
 	{
-
-		if (zend_parse_parameters
-			(ZEND_NUM_ARGS() TSRMLS_CC, "s|l", &query, &query_len,
-			 &limit) == FAILURE)
+		if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "sl",
+								  &query, &query_len, &limit) == FAILURE)
 		{
-
-			/* FIXME -- why is this not an ereport? */
 			zend_error(E_WARNING, "Can not parse parameters in %s",
 					   get_active_function_name(TSRMLS_C));
 			return;
@@ -1373,11 +1314,9 @@ ZEND_FUNCTION(spi_exec_query)
 	}
 	else
 	{
-		if (zend_parse_parameters
-			(ZEND_NUM_ARGS()TSRMLS_CC, "s", &query, &query_len) == FAILURE)
+		if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
+								  &query, &query_len) == FAILURE)
 		{
-
-			/* FIXME -- why is this not an ereport? */
 			zend_error(E_WARNING, "Can not parse parameters in %s",
 					   get_active_function_name(TSRMLS_C));
 			return;
@@ -1421,14 +1360,15 @@ ZEND_FUNCTION(spi_fetch_row)
 
 	if (ZEND_NUM_ARGS() != 1)
 		WRONG_PARAM_COUNT;
-	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "a", &param) ==
-		FAILURE)
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "a",
+							  &param) == FAILURE)
 	{
-		/* FIXME -- why is this not an ereport? */
 		zend_error(E_WARNING, "Can not parse parameters in %s",
 				   get_active_function_name(TSRMLS_C));
 		return;
 	}
+
 	pointer = plphp_get_elem(param, "res");
 	sscanf(pointer, "%p", &tup_table);
 
@@ -1440,9 +1380,8 @@ ZEND_FUNCTION(spi_fetch_row)
 
 	if (counter < processed)
 	{
-		row =
-			plphp_hash_from_tuple(tup_table->vals[counter],
-								  tup_table->tupdesc);
+		row = plphp_hash_from_tuple(tup_table->vals[counter],
+			  						tup_table->tupdesc);
 		tmp->value.lval++;
 
 		*return_value = *row;
@@ -1455,15 +1394,16 @@ ZEND_FUNCTION(spi_fetch_row)
 }
 
 /*
- * compile_plphp_function	- compile (or hopefully just look up) function
+ * plphp_compile_function
+ *
+ * 		Compile (or hopefully just look up) function
  */
 static plphp_proc_desc *
-compile_plphp_function(Oid fn_oid, int is_trigger)
+plphp_compile_function(Oid fn_oid, int is_trigger)
 {
 	HeapTuple	procTup;
 	Form_pg_proc procStruct;
 	char		internal_proname[64];
-	int			proname_len;
 	plphp_proc_desc *prodesc = NULL;
 	int			i;
 	bool		uptodate;
@@ -1478,16 +1418,14 @@ compile_plphp_function(Oid fn_oid, int is_trigger)
 	procStruct = (Form_pg_proc) GETSTRUCT(procTup);
 
 	/*
-	 * Build our internal proc name from the functions Oid
+	 * Build our internal procedure name from the function's Oid
 	 */
 	if (is_trigger)
 		snprintf(internal_proname, sizeof(internal_proname),
 				 "plphp_proc_%u_trigger", fn_oid);
 	else
-		snprintf(internal_proname, sizeof(internal_proname), "plphp_proc_%u",
-				 fn_oid);
-
-	proname_len = strlen(internal_proname);
+		snprintf(internal_proname, sizeof(internal_proname),
+				 "plphp_proc_%u", fn_oid);
 
 	/*
 	 * Look up the internal proc name in the hashtable
@@ -1503,7 +1441,15 @@ compile_plphp_function(Oid fn_oid, int is_trigger)
 
 		/* We need to delete the old entry */
 		if (!uptodate)
+		{
+			/*
+			 * FIXME -- use a per-function memory context and fix this
+			 * stuff for good
+			 */
+			free(prodesc->proname);
+			free(prodesc);
 			prodesc = NULL;
+		}
 	}
 
 	if (prodesc == NULL)
@@ -1522,13 +1468,14 @@ compile_plphp_function(Oid fn_oid, int is_trigger)
 		 * Allocate a new procedure description block
 		 */
 		prodesc = (plphp_proc_desc *) malloc(sizeof(plphp_proc_desc));
-		if (prodesc == NULL)
-			ereport(ERROR,
-					(errcode(ERRCODE_OUT_OF_MEMORY),
-					 errmsg("out of memory")));
+		if (!prodesc)
+			plphp_elog(ERROR, "out of memory");
+
 		MemSet(prodesc, 0, sizeof(plphp_proc_desc));
 		prodesc->proname = strdup(internal_proname);
-		/* XXX verify out of memory */
+		if (!prodesc->proname)
+			plphp_elog(ERROR, "out of memory");
+
 		prodesc->fn_xmin = HeapTupleHeaderGetXmin(procTup->t_data);
 		prodesc->fn_cmin = HeapTupleHeaderGetCmin(procTup->t_data);
 
@@ -1542,8 +1489,8 @@ compile_plphp_function(Oid fn_oid, int is_trigger)
 		{
 			free(prodesc->proname);
 			free(prodesc);
-			elog(ERROR, "cache lookup failed for language %u",
-				 procStruct->prolang);
+			plphp_elog(ERROR, "cache lookup failed for language %u",
+					   procStruct->prolang);
 		}
 		langStruct = (Form_pg_language) GETSTRUCT(langTup);
 		prodesc->lanpltrusted = langStruct->lanpltrusted;
@@ -1578,10 +1525,8 @@ compile_plphp_function(Oid fn_oid, int is_trigger)
 					(procStruct->prorettype == ANYELEMENTOID) ||
 					(procStruct->prorettype == ANYARRAYOID))
 				{
-					/*
-					 * okay
-					 */
-					prodesc->ret_type = prodesc->ret_type | PL_PSEUDO;
+					/* okay */
+					prodesc->ret_type |= PL_PSEUDO;
 				}
 				else if (procStruct->prorettype == TRIGGEROID)
 				{
@@ -1603,24 +1548,24 @@ compile_plphp_function(Oid fn_oid, int is_trigger)
 				}
 			}
 			if (procStruct->proretset)
-				prodesc->ret_type = prodesc->ret_type | PL_SET;
+				prodesc->ret_type |= PL_SET;
 
 			prodesc->ret_oid = procStruct->prorettype;
 
 			if (typeStruct->typtype == 'c' ||
 				procStruct->prorettype == RECORDOID)
 			{
-				prodesc->ret_type = prodesc->ret_type | PL_TUPLE;
+				prodesc->ret_type |= PL_TUPLE;
 			}
 
-			if (procStruct->prorettype != ANYARRAYOID)
-			{
-				/* true, if function returns "true" array */
-				if (typeStruct->typlen == -1 && typeStruct->typelem)
-					prodesc->ret_type = prodesc->ret_type | PL_ARRAY;
-			}
+			if (procStruct->prorettype == ANYARRAYOID)
+				prodesc->ret_type |= PL_ARRAY;
 			else
-				prodesc->ret_type = prodesc->ret_type | PL_ARRAY;
+			{
+				/* function returns a normal (declared) array */
+				if (typeStruct->typlen == -1 && typeStruct->typelem)
+					prodesc->ret_type |= PL_ARRAY;
+			}
 
 			perm_fmgr_info(typeStruct->typinput, &(prodesc->result_in_func));
 			prodesc->result_typioparam = getTypeIOParam(typeTup);
@@ -1639,20 +1584,19 @@ compile_plphp_function(Oid fn_oid, int is_trigger)
 				{
 					free(prodesc->proname);
 					free(prodesc);
-					elog(ERROR, "cache lookup failed for type %u",
-						 DatumGetObjectId(argid));
+					plphp_elog(ERROR, "cache lookup failed for type %u",
+							   DatumGetObjectId(argid));
 				}
 
 				typeStruct = (Form_pg_type) GETSTRUCT(typeTup);
 
-				/*
-				 * Disallow pseudotype argument
-				 */
+				/* a pseudotype? */
 				if (typeStruct->typtype == 'p')
 					prodesc->arg_is_p[i] = true;
 				else
 					prodesc->arg_is_p[i] = false;
 
+				/* deal with composite types */
 				if (typeStruct->typtype == 'c')
 					prodesc->arg_is_rowtype[i] = true;
 				else
@@ -1668,27 +1612,26 @@ compile_plphp_function(Oid fn_oid, int is_trigger)
 		}
 
 		/*
-		 * Create the text of the anonymous subroutine.
-		 *
-		 * We do not use a named subroutine so that we can call directly
-		 * through the reference.
-		 *
+		 * Create the text of the PHP function.  We do not use the same
+		 * function name, because that would prevent function overloading.
+		 * Sadly this also prevents PL/php functions from calling each other
+		 * easily.
 		 */
 		prosrcdatum = SysCacheGetAttr(PROCOID, procTup,
 									  Anum_pg_proc_prosrc, &isnull);
 		if (isnull)
-			elog(ERROR, "null prosrc");
+			plphp_elog(ERROR, "cache lookup yielded NULL prosrc");
 
 		proc_source = DatumGetCString(DirectFunctionCall1(textout,
 														  prosrcdatum));
 
-		/*
-		 * Create the procedure in the interpreter
-		 */
+		/* Create the procedure in the interpreter */
 		complete_proc_source =
-			(char *) palloc(strlen(proc_source) + proname_len +
+			(char *) palloc(strlen(proc_source) +
+							strlen(internal_proname) +
 							strlen("function  ($args, $argc){ } "));
 
+		/* XXX Is this usage of sprintf safe? */
 		if (is_trigger)
 			sprintf(complete_proc_source, "function %s($_TD){%s}",
 					internal_proname, proc_source);
@@ -1699,7 +1642,7 @@ compile_plphp_function(Oid fn_oid, int is_trigger)
 		zend_hash_del(CG(function_table), prodesc->proname,
 					  strlen(prodesc->proname) + 1);
 
-		pointer = (char *) palloc(100);
+		pointer = (char *) palloc(64);
 		sprintf(pointer, "%p", (void *) prodesc);
 		add_assoc_string(plphp_proc_array, internal_proname,
 						 (char *) pointer, 1);
@@ -1707,8 +1650,8 @@ compile_plphp_function(Oid fn_oid, int is_trigger)
 		if (zend_eval_string(complete_proc_source, NULL,
 							 "plphp function source" TSRMLS_CC) == FAILURE)
 		{
-			elog(ERROR, "plphp: unable to compile function \"%s\"",
-				 prodesc->proname);
+			plphp_elog(ERROR, "plphp: unable to compile function \"%s\"",
+					   prodesc->proname);
 		}
 
 		pfree(complete_proc_source);
@@ -1719,8 +1662,13 @@ compile_plphp_function(Oid fn_oid, int is_trigger)
 	return prodesc;
 }
 
+/*
+ * plphp_func_build_args
+ *
+ * 		Build a PHP array representing the arguments to the function
+ */
 static zval *
-plphp_func_build_args(plphp_proc_desc * desc, FunctionCallInfo fcinfo)
+plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 {
 	zval	   *retval;
 	int			i;
@@ -1728,94 +1676,89 @@ plphp_func_build_args(plphp_proc_desc * desc, FunctionCallInfo fcinfo)
 	MAKE_STD_ZVAL(retval);
 	array_init(retval);
 
-	if (desc->nargs)
+	if (!desc->nargs)
+		return retval;
+
+	for (i = 0; i < desc->nargs; i++)
 	{
-
-		for (i = 0; i < desc->nargs; i++)
+		if (desc->arg_is_p[i])
 		{
-			if (desc->arg_is_p[i])
-			{
-				HeapTuple	typeTup;
-				Form_pg_type typeStruct;
+			HeapTuple	typeTup;
+			Form_pg_type typeStruct;
 
-				typeTup = SearchSysCache(TYPEOID,
-										 ObjectIdGetDatum(get_fn_expr_argtype
-														  (fcinfo->flinfo, i)),
-										 0, 0, 0);
-				typeStruct = (Form_pg_type) GETSTRUCT(typeTup);
-				perm_fmgr_info(typeStruct->typoutput,
-							   &(desc->arg_out_func[i]));
-				desc->arg_typioparam[i] = typeStruct->typelem;
-				ReleaseSysCache(typeTup);
+			typeTup = SearchSysCache(TYPEOID,
+									 ObjectIdGetDatum(get_fn_expr_argtype
+													  (fcinfo->flinfo, i)),
+									 0, 0, 0);
+			typeStruct = (Form_pg_type) GETSTRUCT(typeTup);
+			perm_fmgr_info(typeStruct->typoutput,
+						   &(desc->arg_out_func[i]));
+			desc->arg_typioparam[i] = typeStruct->typelem;
+			ReleaseSysCache(typeTup);
+		}
+
+		if (desc->arg_is_rowtype[i])
+		{
+			if (fcinfo->argnull[i])
+				add_next_index_unset(retval);
+			else
+			{
+				HeapTupleHeader	td;
+				Oid				tupType;
+				int32			tupTypmod;
+				TupleDesc		tupdesc;
+				HeapTupleData	tmptup;
+				zval		   *hashref;
+
+				td = DatumGetHeapTupleHeader(fcinfo->arg[i]);
+
+				/* Build a temporary HeapTuple control structure */
+				tmptup.t_len = HeapTupleHeaderGetDatumLength(td);
+				tmptup.t_data = DatumGetHeapTupleHeader(fcinfo->arg[i]);
+
+				/* Extract rowtype info and find a tupdesc */
+				tupType = HeapTupleHeaderGetTypeId(tmptup.t_data);
+				tupTypmod = HeapTupleHeaderGetTypMod(tmptup.t_data);
+				tupdesc = lookup_rowtype_tupdesc(tupType, tupTypmod);
+
+				/* Build the PHP hash */
+				hashref = plphp_build_tuple_argument(&tmptup, tupdesc);
+				zend_hash_next_index_insert(retval->value.ht,
+											(void *) &hashref,
+											sizeof(zval *), NULL);
 			}
-
-			if (desc->arg_is_rowtype[i])
+		}
+		else
+		{
+			if (fcinfo->argnull[i])
+				add_next_index_unset(retval);
+			else
 			{
-				if (fcinfo->argnull[i])
-					add_next_index_unset(retval);
-				else
+				char	   *tmp;
+
+				tmp =
+					DatumGetCString(FunctionCall3
+									(&(desc->arg_out_func[i]),
+									 fcinfo->arg[i],
+									 ObjectIdGetDatum(desc->arg_typioparam[i]),
+									 Int32GetDatum(-1)));
+				if (tmp[0] == '{')
 				{
-					HeapTupleHeader td;
-					Oid			tupType;
-					int32		tupTypmod;
-					TupleDesc	tupdesc;
-					HeapTupleData tmptup;
 					zval	   *hashref;
 
-					td = DatumGetHeapTupleHeader(fcinfo->arg[i]);
-					/*
-					 * Extract rowtype info and find a tupdesc
-					 */
-					tupType = HeapTupleHeaderGetTypeId(td);
-					tupTypmod = HeapTupleHeaderGetTypMod(td);
-					tupdesc = lookup_rowtype_tupdesc(tupType, tupTypmod);
-					/*
-					 * Build a temporary HeapTuple control structure
-					 */
-					tmptup.t_len = HeapTupleHeaderGetDatumLength(td);
-					tmptup.t_data = td;
-
-					/*
-					 * plphp_build_tuple_argument
-					 */
-					hashref = plphp_build_tuple_argument(&tmptup, tupdesc);
+					hashref = plphp_convert_from_cArray(tmp);
 					zend_hash_next_index_insert(retval->value.ht,
 												(void *) &hashref,
 												sizeof(zval *), NULL);
 				}
-			}
-			else
-			{
-				if (fcinfo->argnull[i])
-					add_next_index_unset(retval);
 				else
-				{
-					char	   *tmp;
+					add_next_index_string(retval, tmp, 1);
 
-					tmp =
-						DatumGetCString(FunctionCall3
-										(&(desc->arg_out_func[i]),
-										 fcinfo->arg[i],
-										 ObjectIdGetDatum(desc->
-														  arg_typioparam[i]),
-										 Int32GetDatum(-1)));
-					if (tmp[0] == '{')
-					{
-						/* some hack to determine that the array type used */
-						zval	   *hashref;
-
-						hashref = plphp_convert_from_cArray(tmp);
-						zend_hash_next_index_insert(retval->value.ht,
-													(void *) &hashref,
-													sizeof(zval *), NULL);
-					}
-					else
-						add_next_index_string(retval, tmp, 1);
-					/*
-					 * FIXME strnge but some time fith simlpe params this crush backend :(
-					 * pfree(tmp);
-					 */
-				}
+				/*
+				 * FIXME - figure out which parameters are passed by
+				 * reference and need freeing
+				 */
+				/* pfree(tmp); */
 			}
 		}
 	}
@@ -1823,71 +1766,45 @@ plphp_func_build_args(plphp_proc_desc * desc, FunctionCallInfo fcinfo)
 	return retval;
 }
 
+/*
+ * plphp_call_php_func
+ *
+ * 		Build the function argument array and call the PHP function.
+ */
 static zval *
-plphp_call_php_func(plphp_proc_desc * desc, FunctionCallInfo fcinfo)
+plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 {
 	zval	   *retval;
-	zval	   *Zargs;
-	zval	   *Zargc;
-	char		_call[64];
+	zval	   *args;
+	zval	   *argc;
+	char		call[64];
 
 	MAKE_STD_ZVAL(retval);
 	array_init(retval);
 
-	MAKE_STD_ZVAL(Zargs);
-	array_init(Zargs);
-	MAKE_STD_ZVAL(Zargc);
-	ZVAL_LONG(Zargc, desc->nargs);
+	MAKE_STD_ZVAL(args);
+	array_init(args);
 
-	Zargs = plphp_func_build_args(desc, fcinfo);
+	MAKE_STD_ZVAL(argc);
+	ZVAL_LONG(argc, desc->nargs);
 
-	ZEND_SET_SYMBOL(&EG(symbol_table), "_PLA", Zargs);
-	ZEND_SET_SYMBOL(&EG(symbol_table), "_PLAC", Zargc);
-	sprintf(_call, "plphp_proc_%u($_PLA, $_PLAC);", fcinfo->flinfo->fn_oid);
+	args = plphp_func_build_args(desc, fcinfo);
+
+	ZEND_SET_SYMBOL(&EG(symbol_table), "_args_int", args);
+	ZEND_SET_SYMBOL(&EG(symbol_table), "_argc_int", argc);
+	sprintf(call, "plphp_proc_%u($_args_int, $_argc_int);",
+			fcinfo->flinfo->fn_oid);
 
 	zend_first_try
 	{
-		if (zend_eval_string(_call, retval, "plphp function call" TSRMLS_CC) ==
-			FAILURE)
-		{
-			elog(ERROR, "plphp: function call - failure");
-		}
+		if (zend_eval_string(call, retval, "plphp function call"
+							 TSRMLS_CC) == FAILURE)
+			plphp_elog(ERROR, "plphp: function call - failure");
 
 	}
 	zend_catch
 	{
-		elog(ERROR, "plphp: fatal error...");
-	}
-	zend_end_try();
-
-	return retval;
-}
-
-static zval *
-plphp_call_php_trig(plphp_proc_desc * desc, FunctionCallInfo fcinfo,
-					zval * hvTD)
-{
-	zval	   *retval;
-	char		_call[64];
-
-	MAKE_STD_ZVAL(retval);
-	retval->type = IS_NULL;
-
-	ZEND_SET_SYMBOL(&EG(symbol_table), "_trigA", hvTD);
-	sprintf(_call, "plphp_proc_%u_trigger(&$_trigA);", fcinfo->flinfo->fn_oid);
-
-	zend_first_try
-	{
-		if (zend_eval_string(_call, retval, "plphp trigger call" TSRMLS_CC) ==
-			FAILURE)
-		{
-			elog(ERROR, "plphp: trigger call - failure");
-		}
-
-	}
-	zend_catch
-	{
-		elog(ERROR, "plphp: fatal error...");
+		plphp_elog(ERROR, "plphp: fatal error...");
 	}
 	zend_end_try();
 
@@ -1895,8 +1812,45 @@ plphp_call_php_trig(plphp_proc_desc * desc, FunctionCallInfo fcinfo,
 }
 
 /*
- * plphp_build_tuple_argument() - Build an array
- *				  from all attributes of a given tuple
+ * plphp_call_php_trig
+ *
+ * 		Build trigger argument array and call the PHP function as a
+ * 		trigger.
+ */
+static zval *
+plphp_call_php_trig(plphp_proc_desc *desc, FunctionCallInfo fcinfo,
+					zval *trigdata)
+{
+	zval	   *retval;
+	char		call[64];
+
+	MAKE_STD_ZVAL(retval);
+	retval->type = IS_NULL;
+
+	ZEND_SET_SYMBOL(&EG(symbol_table), "_trigargs", trigdata);
+	sprintf(call, "plphp_proc_%u_trigger(&$_trigargs);",
+			fcinfo->flinfo->fn_oid);
+
+	zend_first_try
+	{
+		if (zend_eval_string(call, retval, "plphp trigger call"
+							 TSRMLS_CC) == FAILURE)
+			plphp_elog(ERROR, "plphp: trigger call - failure");
+
+	}
+	zend_catch
+	{
+		plphp_elog(ERROR, "plphp: fatal error...");
+	}
+	zend_end_try();
+
+	return retval;
+}
+
+/*
+ * plphp_build_tuple_argument
+ *
+ * Build a PHP array from all attributes of a given tuple
  */
 static zval *
 plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc)
@@ -1916,35 +1870,26 @@ plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc)
 
 	for (i = 0; i < tupdesc->natts; i++)
 	{
-		/*
-		 * ignore dropped attributes
-		 */
+		/* Ignore dropped attributes */
 		if (tupdesc->attrs[i]->attisdropped)
 			continue;
 
-		/************************************************************
-		 * Get the attribute name
-		 ************************************************************/
+		/* Get the attribute name */
 		attname = tupdesc->attrs[i]->attname.data;
 
-		/************************************************************
-		 * Get the attributes value
-		 ************************************************************/
+		/* Get the attribute value */
 		attr = heap_getattr(tuple, i + 1, tupdesc, &isnull);
 
-		/************************************************************
-		 *	If it is null it will be set to undef in the hash.
-		 ************************************************************/
+		/* If it is null, set it to undef in the hash. */
 		if (isnull)
 		{
 			add_next_index_unset(output);
 			continue;
 		}
 
-		/************************************************************
-		 * Lookup the attribute type in the syscache
-		 * for the output function
-		 ************************************************************/
+		/*
+		 * Lookup the attribute type in the syscache for the output function
+		 */
 		typeTup = SearchSysCache(TYPEOID,
 								 ObjectIdGetDatum(tupdesc->attrs[i]->atttypid),
 								 0, 0, 0);
@@ -1958,16 +1903,11 @@ plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc)
 		typioparam = getTypeIOParam(typeTup);
 		ReleaseSysCache(typeTup);
 
-		/************************************************************
-		 * Append the attribute name and the value to the list.
-		 ************************************************************/
-		outputstr = DatumGetCString(OidFunctionCall3(typoutput,
-													 attr,
-													 ObjectIdGetDatum
-													 (typioparam),
-													 Int32GetDatum(tupdesc->
-																   attrs[i]->
-																   atttypmod)));
+		/* Append the attribute name and the value to the list. */
+		outputstr =
+			DatumGetCString(OidFunctionCall3(typoutput, attr,
+											 ObjectIdGetDatum(typioparam),
+											 Int32GetDatum(tupdesc->attrs[i]->atttypmod)));
 		add_assoc_string(output, attname, outputstr, 1);
 		pfree(outputstr);
 	}
@@ -1975,57 +1915,52 @@ plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc)
 	return output;
 }
 
+/*
+ * Handle a SRF function.
+ */
 static Datum
-plphp_srf_handler(PG_FUNCTION_ARGS, plphp_proc_desc * prodesc)
+plphp_srf_handler(FunctionCallInfo fcinfo, plphp_proc_desc *prodesc)
 {
-
 	FuncCallContext *funcctx;
-	TupleDesc	tupdesc;
+	TupleDesc		tupdesc;
 	TupleTableSlot *slot;
-	AttInMetadata *attinmeta = NULL;
-	int			call_cntr;
-	int			max_calls;
-	char	  **values = NULL;
-
-	if (SRF_IS_FIRSTCALL())
-		if (srf_phpret->type != IS_ARRAY)
-			elog(ERROR, "plphp: this function must return reference to array");
+	AttInMetadata  *attinmeta = NULL;
+	int				call_cntr;
+	int				max_calls;
+	char		  **values = NULL;
 
 	if (SRF_IS_FIRSTCALL())
 	{
 		MemoryContext oldcontext;
+
+		if (srf_phpret->type != IS_ARRAY)
+			plphp_elog(ERROR,
+				   	   "this function must return a reference to an array");
 
 		funcctx = SRF_FIRSTCALL_INIT();
 		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
 		if (prodesc->ret_type & PL_TUPLE)
 		{
-			/*
-			 * Build a tuple description
-			 */
+			/* Build a tupledesc */
 			tupdesc =
 				plphp_get_function_tupdesc(prodesc->ret_oid,
 					  					   (ReturnSetInfo *) fcinfo->resultinfo);
 			tupdesc = CreateTupleDescCopy(tupdesc);
-
-			/*
-			 * total number of tuples to be returned
-			 */
-			funcctx->max_calls = plphp_get_rows_num(srf_phpret);
-
 			funcctx->tuple_desc = tupdesc;
 
-			/*
-			 * allocate a slot for a tuple with this tupdesc
-			 */
+			/* total number of tuples to be returned */
+			funcctx->max_calls = plphp_get_rows_num(srf_phpret);
+
+			/* allocate a slot for a tuple with this tupdesc */
 			slot = TupleDescGetSlot(tupdesc);
-			/*
-			 * assign slot to function context
-			 */
+
+			/* assign slot to function context */
 			funcctx->slot = slot;
+
 			/*
-			 * generate attribute metadata needed later to produce tuples from raw
-			 * C strings
+			 * generate attribute metadata needed later to produce tuples from
+			 * raw C strings
 			 */
 			attinmeta = TupleDescGetAttInMetadata(tupdesc);
 			funcctx->attinmeta = attinmeta;
@@ -2047,7 +1982,8 @@ plphp_srf_handler(PG_FUNCTION_ARGS, plphp_proc_desc * prodesc)
 	max_calls = funcctx->max_calls;
 	tupdesc = funcctx->tuple_desc;
 
-	if (call_cntr < max_calls)	/* do when there is more left to send */
+	/* do when there is more left to send */
+	if (call_cntr < max_calls)	
 	{
 		Datum		result;
 		int			i;
@@ -2056,40 +1992,33 @@ plphp_srf_handler(PG_FUNCTION_ARGS, plphp_proc_desc * prodesc)
 		if (prodesc->ret_type & PL_TUPLE)
 		{
 			HeapTuple	tuple;
-			char	   *key,
-					   *val;
+			char	   *key;
 
 			/*
-			 * Prepare a values array for storage in our slot.
-			 * This should be an array of C strings which will
-			 * be processed later by the type input functions.
+			 * Prepare a values array for storage in our slot.  This should be
+			 * an array of C strings which will be processed later by the type
+			 * input functions.
 			 */
 			values = (char **) palloc(tupdesc->natts * sizeof(char *));
 			zRow = plphp_get_row(srf_phpret, call_cntr);
 
+			/* fill in each value */
 			for (i = 0; i < tupdesc->natts; i++)
 			{
 				key = SPI_fname(tupdesc, i + 1);
-				val = plphp_get_elem(zRow, key);
-				if (val)
-					values[i] = val;
-				else
-					values[i] = NULL;
+				/* possibly NULL, but that's OK */
+				values[i] = plphp_get_elem(zRow, key);
 			}
 
-			/*
-			 * build a tuple
-			 */
+			/* Build the tuple Datum */
 			tuple = BuildTupleFromCStrings(attinmeta, values);
-			/*
-			 * make the tuple into a datum
-			 */
 			result = TupleGetDatum(slot, tuple);
 		}
 		else
 		{
 			char	   *retvalbuffer = NULL;
 
+			/* FIXME -- we have to rewrite this, probably using StringInfo. */
 			zRow = plphp_get_row(srf_phpret, call_cntr);
 			switch (zRow->type)
 			{
@@ -2118,42 +2047,85 @@ plphp_srf_handler(PG_FUNCTION_ARGS, plphp_proc_desc * prodesc)
 					fcinfo->isnull = true;
 					break;
 				default:
-					fcinfo->isnull = true;
-					elog(WARNING,
-						 "plphp functions cannot return this type %i to PostgreSQL.",
-						 zRow->type);
+					plphp_elog(ERROR, "plphp functions cannot return type %i",
+							   zRow->type);
 			}
 
 			if (!fcinfo->isnull)
 			{
-				fcinfo->isnull = false;
 				result = FunctionCall3(&prodesc->result_in_func,
 									   PointerGetDatum(retvalbuffer),
-									   ObjectIdGetDatum(prodesc->
-														result_typioparam),
+									   ObjectIdGetDatum(prodesc->result_typioparam),
 									   Int32GetDatum(-1));
 				pfree(retvalbuffer);
 			}
 			else
-			{
-				fcinfo->isnull = true;
 				result = (Datum) 0;
-			}
 		}
+
 		SRF_RETURN_NEXT(funcctx, result);
-		fcinfo->isnull = false;
 	}
 	else
-	{							/* do when there is no more left */
+		/* do when there is no more left */
 		SRF_RETURN_DONE(funcctx);
-	}
 }
 
+/*
+ * pg_raise
+ * 		User-callable function for sending messages to the Postgres log.
+ */
+ZEND_FUNCTION(pg_raise)
+{
+	char	   *level = NULL,
+			   *message = NULL;
+	int			level_len,
+				message_len,
+				elevel = 0;
+
+	if (ZEND_NUM_ARGS() != 2)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("wrong number of arguments to %s", "pg_raise")));
+	}
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "ss",
+							  &level, &level_len,
+							  &message, &message_len) == FAILURE)
+	{
+		zend_error(E_WARNING, "cannot parse parameters in %s",
+				   get_active_function_name(TSRMLS_C));
+	}
+
+	if (strcasecmp(level, "ERROR") == 0)
+		elevel = E_ERROR;
+	else if (strcasecmp(level, "WARNING") == 0)
+		elevel = E_WARNING;
+	else if (strcasecmp(level, "NOTICE") == 0)
+		elevel = E_NOTICE;
+	else
+		zend_error(E_ERROR, "incorrect log level");
+
+	zend_error(elevel, message);
+}
+
+/*
+ * plphp_error_cb
+ *
+ * A callback for PHP error handling.  This is called when the php_error or
+ * zend_error function is invoked in our code.  Ideally this function should
+ * clean up the PHP state after an ERROR, but zend_try blocks do not seem
+ * to work as I'd expect.  So for now, we degrade the error to WARNING and 
+ * continue executing in the hope that the system doesn't crash later.
+ *
+ * Note that we do clean up some PHP state by hand but it doesn't seem to
+ * work as expected.
+ */
 void
-plphp_error_handler(int type, const char *filename, const uint lineno,
+plphp_error_cb(int type, const char *filename, const uint lineno,
 					const char *fmt, va_list args)
 {
-	char   *str = malloc(1024);
+	char	str[1024];
 	int		elevel;
 
 	vsnprintf(str, 1024, fmt, args);
@@ -2181,9 +2153,46 @@ plphp_error_handler(int type, const char *filename, const uint lineno,
 			break;
 	}
 
+	/* XXX Temporary kludge while we get error trapping to work */
+	if (elevel >= ERROR)
+	{
+		/* imitate _zend_bailout  */
+		CG(unclean_shutdown) = 1;
+		CG(in_compilation) = EG(in_execution) = 0;
+		EG(current_execute_data) = NULL;
+
+		elevel = WARNING;
+	}
+
+	plphp_elog(elevel, str);
+}
+
+/*
+ * Final step in error reporting.  This function is supposed to throw
+ * the error message to Postgres logs and then clean up the PHP state.
+ * I still have to figure out how to make that last part work --
+ * zend_try/zend_catch do not seem to work properly.
+ */
+void
+plphp_elog(int elevel, char *fmt, ...)
+{
+	va_list		ap;
+	char		msg[2048];
+
+	va_start(ap, fmt);
+	vsnprintf(msg, 2048, fmt, ap);
+	va_end(ap);
+
+	if (elevel >= ERROR)
+	{
+		/* imitate _zend_bailout  */
+		CG(unclean_shutdown) = 1;
+		CG(in_compilation) = EG(in_execution) = 0;
+		EG(current_execute_data) = NULL;
+	}
+
 	ereport(elevel,
-			(errmsg(str)));
-	free(str);
+			(errmsg("plphp: %s", msg)));
 }
 
 /*
