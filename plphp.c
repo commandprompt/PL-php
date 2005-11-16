@@ -92,6 +92,17 @@
 		zend_alter_ini_entry(name, sizeof(name), value, strlen(value), \
 							 PHP_INI_SYSTEM, PHP_INI_STAGE_ACTIVATE);
 
+
+/* Check for PostgreSQL version */
+#if (CATALOG_VERSION_NO = 200411041)
+#define PG_VERSION_80_COMPAT
+#elif (CATALOG_VERSION_NO == 200511071)
+#define PG_VERSION_81_COMPAT
+#else
+#error "Unrecognized PostgreSQL version"
+#endif
+
+
 /*
  * These symbols are needed by the Apache module (libphp*.so).  We don't
  * actually use those, but they are needed so that the linker can do its
@@ -1576,7 +1587,12 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 
 			for (i = 0; i < prodesc->nargs; i++)
 			{
+#if 0
 				Datum argid = procStruct->proargtypes.values[i];
+#else
+				Datum argid = procStruct->proargtypes[i];
+#endif
+
 
 				typeTup = SearchSysCache(TYPEOID, argid, 0, 0, 0);
 
