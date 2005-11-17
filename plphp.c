@@ -45,6 +45,7 @@
 #include "postgres.h"
 
 #include "access/heapam.h"
+#include "catalog/catversion.h"
 #include "catalog/pg_language.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
@@ -94,9 +95,9 @@
 
 
 /* Check for PostgreSQL version */
-#if (CATALOG_VERSION_NO = 200411041)
+#if (CATALOG_VERSION_NO == 200411041)
 #define PG_VERSION_80_COMPAT
-#elif (CATALOG_VERSION_NO == 200511071)
+#elif (CATALOG_VERSION_NO >= 200510211)
 #define PG_VERSION_81_COMPAT
 #else
 #error "Unrecognized PostgreSQL version"
@@ -484,7 +485,10 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 Datum
 plphp_validator(PG_FUNCTION_ARGS)
 {
+	Oid		funcoid = PG_GETARG_OID(0);
 	/* Just a stub for now */
+
+	funcoid = InvalidOid;
 
 	/* The result of a validator is ignored */
 	PG_RETURN_VOID();
@@ -500,9 +504,7 @@ plphp_get_new(zval * array)
 		 (void **) &element) == SUCCESS)
 	{
 		if (Z_TYPE_P(element[0]) == IS_ARRAY)
-		{
 			return element[0];
-		}
 		else
 			elog(ERROR, "plphp: field $_TD['new'] must be an array");
 	}
@@ -1587,9 +1589,9 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 
 			for (i = 0; i < prodesc->nargs; i++)
 			{
-#if 0
+#if defined PG_VERSION_81_COMPAT
 				Datum argid = procStruct->proargtypes.values[i];
-#else
+#elif defined PG_VERSION_80_COMPAT
 				Datum argid = procStruct->proargtypes[i];
 #endif
 
