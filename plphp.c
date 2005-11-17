@@ -28,23 +28,14 @@
  *
  * IDENTIFICATION
  *		$Id$
- *
- * TODO
- *
- * 1. Check all palloc() and malloc() calls: where are they freed,
- * and what MemoryContext management should we be doing?
- *
- * 2. Add a non-stub validator function.
- *
- * 3. Change all string manipulation to StringInfo.
- *
  *********************************************************************
  */
 
-/* PostgreSQL stuff */
-#include "postgres.h"
+/* Our own stuff first */
+#include "plphp_io.h"
 
-#include "access/heapam.h"
+/* PostgreSQL stuff */
+
 #include "catalog/catversion.h"
 #include "catalog/pg_language.h"
 #include "catalog/pg_proc.h"
@@ -92,7 +83,6 @@
 #define INI_HARDCODED(name,value) \
 		zend_alter_ini_entry(name, sizeof(name), value, strlen(value), \
 							 PHP_INI_SYSTEM, PHP_INI_STAGE_ACTIVATE);
-
 
 /* Check for PostgreSQL version */
 #if (CATALOG_VERSION_NO == 200411041)
@@ -213,9 +203,6 @@ static zval *plphp_call_php_func(plphp_proc_desc *, FunctionCallInfo);
 static zval *plphp_call_php_trig(plphp_proc_desc *, FunctionCallInfo, zval *);
 
 static Datum plphp_srf_handler(PG_FUNCTION_ARGS, plphp_proc_desc *);
-static int	plphp_get_rows_num(zval *);
-static zval *plphp_get_row(zval *, int);
-zval	   *plphp_hash_from_tuple(HeapTuple, TupleDesc);
 
 static void plphp_elog(int elevel, char *fmt, ...);
 static void plphp_error_cb(int type, const char *filename, const uint lineno,
@@ -411,7 +398,7 @@ plphp_init(void)
 
 	PG(during_request_startup) = true;
 
-	zend_first_try
+	zend_try
 	{
 		/* Set some defaults */
 		SG(options) |= SAPI_OPTION_NO_CHDIR;
@@ -488,266 +475,24 @@ plphp_validator(PG_FUNCTION_ARGS)
 	Oid		funcoid = PG_GETARG_OID(0);
 	/* Just a stub for now */
 
+	/* Keep compiler quiet */
 	funcoid = InvalidOid;
 
 	/* The result of a validator is ignored */
 	PG_RETURN_VOID();
 }
 
-static zval *
-plphp_get_new(zval * array)
-{
-	zval	  **element;
-
-	if (zend_hash_find
-		(array->value.ht, "new", sizeof("new"),
-		 (void **) &element) == SUCCESS)
-	{
-		if (Z_TYPE_P(element[0]) == IS_ARRAY)
-			return element[0];
-		else
-			elog(ERROR, "plphp: field $_TD['new'] must be an array");
-	}
-	else
-		elog(ERROR, "plphp: field $_TD['new'] not found");
-	return NULL;
-}
-
-static int
-plphp_attr_count(zval * array)
-{
-	/* WARNING -- this only works on simple arrays */
-	return zend_hash_num_elements(Z_ARRVAL_P(array));
-}
-
-static int
-plphp_get_rows_num(zval * array)
-{
-	zval	  **element;
-	HashPosition pos;
-	int			row = 0;
-	int			rv = 0;
-
-	if (Z_TYPE_P(array) == IS_ARRAY)
-	{
-		rv++;
-		for (zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(array), &pos);
-			 zend_hash_get_current_data_ex(Z_ARRVAL_P(array),
-										   (void **) &element,
-										   &pos) == SUCCESS;
-			 zend_hash_move_forward_ex(Z_ARRVAL_P(array), &pos))
-		{
-			if (Z_TYPE_P(element[0]) == IS_ARRAY)
-				row++;
-		}
-
-	}
-	else
-		elog(ERROR, "plphp: wrong type: %i", array->type);
-	return ((!row) ? rv : row);
-}
-
-static int
-plphp_attr_count_r(zval *array)
-{
-	zval	  **element;
-	HashPosition pos;
-	int			ret = 0;
-
-	if (Z_TYPE_P(array) == IS_ARRAY)
-	{
-		for (zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(array), &pos);
-			 zend_hash_get_current_data_ex(Z_ARRVAL_P(array),
-										   (void **) &element,
-										   &pos) == SUCCESS;
-			 zend_hash_move_forward_ex(Z_ARRVAL_P(array), &pos))
-		{
-			if (Z_TYPE_P(element[0]) != IS_ARRAY)
-				ret++;
-			else
-				ret += plphp_attr_count_r(element[0]);
-		}
-	}
-	return ret;
-}
-
-static char **
-plphp_get_attr_name(zval * array)
-{
-	char	  **rv;
-	zval	  **element;
-	HashPosition pos;
-	int			cc = 0,
-				i = 0;
-
-	cc = plphp_attr_count(array);
-	rv = (char **) palloc(cc * sizeof(char *));
-
-	if (Z_TYPE_P(array) == IS_ARRAY)
-	{
-		for (zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(array), &pos);
-			 zend_hash_get_current_data_ex(Z_ARRVAL_P(array),
-										   (void **) &element,
-										   &pos) == SUCCESS;
-			 zend_hash_move_forward_ex(Z_ARRVAL_P(array), &pos))
-		{
-			if (Z_TYPE_P(element[0]) != IS_ARRAY)
-			{
-				rv[i] = (char *) palloc(pos->nKeyLength * sizeof(char));
-				rv[i] = pos->arKey;
-				i++;
-			}
-			else
-				elog(ERROR, "plphp: input type must not be an array");
-		}
-	}
-	else
-		elog(ERROR, "plphp: input type must be an array");
-	return rv;
-}
-
-static zval *
-plphp_get_pelem(zval * array, char *key)
-{
-	zval	  **element;
-	HashPosition pos;
-
-	if (NULL == array)
-	    return NULL;
-
-	if (Z_TYPE_P(array) == IS_ARRAY)
-	{
-		for (zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(array), &pos);
-			 zend_hash_get_current_data_ex(Z_ARRVAL_P(array),
-										   (void **) &element,
-										   &pos) == SUCCESS;
-			 zend_hash_move_forward_ex(Z_ARRVAL_P(array), &pos))
-		{
-			if (Z_TYPE_P(element[0]) != IS_ARRAY)
-			{
-				if (strcasecmp(pos->arKey, key) == 0)
-					return element[0];
-			}
-		}
-	}
-	return NULL;
-}
-
-static char *
-plphp_get_elem(zval * array, char *key)
-{
-	zval	   *element;
-	char	   *ret;
-
-	ret = palloc(64);
-
-	element = plphp_get_pelem(array, key);
-
-	if ((element != NULL) && (Z_TYPE_P(element) != IS_ARRAY))
-	{
-		if (Z_TYPE_P(element) == IS_LONG)
-		{
-			sprintf(ret, "%ld", element->value.lval);
-			return ret;
-		}
-		else if (Z_TYPE_P(element) == IS_DOUBLE)
-		{
-			sprintf(ret, "%e", element->value.dval);
-			return ret;
-		}
-		else if (Z_TYPE_P(element) == IS_STRING)
-			return element->value.str.val;
-	}
-	return NULL;
-}
-
-zval *
-plphp_get_row(zval * array, int index)
-{
-	zval	  **element;
-	HashPosition pos;
-	int			row = 0;
-
-	if (NULL != array)
-		if (Z_TYPE_P(array) == IS_ARRAY)
-		{
-
-			for (zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(array), &pos);
-				 zend_hash_get_current_data_ex(Z_ARRVAL_P(array),
-											   (void **) &element,
-											   &pos) == SUCCESS;
-				 zend_hash_move_forward_ex(Z_ARRVAL_P(array), &pos))
-			{
-
-				if (Z_TYPE_P(element[0]) != IS_ARRAY)
-				{
-					if (row == index)
-						return element[0];
-					row++;
-				}
-				else
-				{
-					if (row == index)
-						return element[0];
-					row++;
-				}
-			}
-		}
-	return NULL;
-}
-
-static zval *
-plphp_convert_from_cArray(char *input)
-{
-	zval	   *retval = NULL;
-	char	   *work;
-	int			i,
-				arr_cnt = 0;
-	char		buff[2];
-
-	MAKE_STD_ZVAL(retval);
-	array_init(retval);
-
-	for (i = 0; i < strlen(input); i++)
-	{
-		if (input[i] == '{')
-			arr_cnt++;
-	}
-
-	work = (char *) palloc(strlen(input) + arr_cnt * 5 + 2);
-
-	sprintf(work, "array(");
-
-	for (i = 1; i < strlen(input); i++)
-	{
-		if (input[i] == '{')
-			strcat(work, "array(");
-		else if (input[i] == '}')
-			strcat(work, ")");
-		else
-		{
-			sprintf(buff, "%c", input[i]);
-			strcat(work, buff);
-		}
-	}
-
-	strcat(work, ";");
-
-	if (zend_eval_string(work, retval,
-						 "plphp array input parameter" TSRMLS_CC) == FAILURE)
-		elog(ERROR, "plphp: convert to internal representation failure");
-
-	return retval;
-}
-
+/*
+ * plphp_get_function_tupdesc
+ *
+ * 		Returns a TupleDesc of the function's return type.
+ */
 static TupleDesc
 plphp_get_function_tupdesc(Oid result_type, ReturnSetInfo *rsinfo)
 {
 	if (result_type == RECORDOID)
 	{
-		/*
-		 * We must get the information from call context
-		 */
+		/* We must get the information from call context */
 		if (!rsinfo || !IsA(rsinfo, ReturnSetInfo) ||
 			rsinfo->expectedDesc == NULL)
 			ereport(ERROR,
@@ -757,64 +502,8 @@ plphp_get_function_tupdesc(Oid result_type, ReturnSetInfo *rsinfo)
 		return rsinfo->expectedDesc;
 	}
 	else
-		/*
-		 * ordinary composite type
-		 */
+		/* ordinary composite type */
 		return lookup_rowtype_tupdesc(result_type, -1);
-}
-
-static int
-plphp_convert_to_pg_array(zval * array, char *buffer)
-{
-	int			arr_size = 0;
-	zval	  **element;
-	HashPosition pos;
-	char	   *cElem;
-	int			i = 0;
-
-	arr_size = plphp_attr_count(array);
-
-	strcat(buffer, "{");
-	if (Z_TYPE_P(array) == IS_ARRAY)
-	{
-		for (zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(array), &pos);
-			 zend_hash_get_current_data_ex(Z_ARRVAL_P(array),
-										   (void **) &element,
-										   &pos) == SUCCESS;
-			 zend_hash_move_forward_ex(Z_ARRVAL_P(array), &pos))
-		{
-			if (Z_TYPE_P(element[0]) != IS_ARRAY)
-			{
-				switch (Z_TYPE_P(element[0]))
-				{
-					case IS_LONG:
-						cElem = palloc(255);
-						sprintf(cElem, "%li", element[0]->value.lval);
-						strcat(buffer, cElem);
-						pfree(cElem);
-						break;
-					case IS_DOUBLE:
-						cElem = palloc(255);
-						sprintf(cElem, "%e", element[0]->value.dval);
-						strcat(buffer, cElem);
-						pfree(cElem);
-						break;
-					case IS_STRING:
-						strcat(buffer, element[0]->value.str.val);
-						break;
-				}
-			}
-			else
-			{
-				plphp_convert_to_pg_array(element[0], buffer);
-			}
-			if (i != arr_size - 1)
-				strcat(buffer, ",");
-			i++;
-		}
-	}
-	strcat(buffer, "}");
-	return 1;
 }
 
 static HeapTuple
@@ -1135,7 +824,10 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 	PG(safe_mode) = desc->lanpltrusted;
 
 	/*
-	 * Call the PHP function if not returning set
+	 * Call the PHP function.  In a SRF, this is called multiple times; we must
+	 * execute the function only the first time around -- the following
+	 * iterations must extract tuples from wherever the PHP array they are
+	 * stored in.
 	 */
 	if (!(desc->ret_type & PL_SET))
 		phpret = plphp_call_php_func(desc, fcinfo);
@@ -1270,37 +962,6 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 		pfree(retvalbuffer);
 	}
 	return retval;
-}
-
-/*
- * plphp_hash_from_tuple
- *
- *		 Build a PHP hash from a tuple
- */
-zval *
-plphp_hash_from_tuple(HeapTuple tuple, TupleDesc tupdesc)
-{
-	int			i;
-	char	   *attname = NULL;
-	zval	   *array;
-
-	MAKE_STD_ZVAL(array);
-	array_init(array);
-
-	for (i = 0; i < tupdesc->natts; i++)
-	{
-		char *attdata;
-
-		/* Get the attribute name */
-		attname = tupdesc->attrs[i]->attname.data;
-
-		/* and get its value */
-		if ((attdata = SPI_getvalue(tuple, tupdesc, i + 1)) != NULL)
-			add_assoc_string(array, attname, attdata, 1);
-		else
-			add_assoc_null(array, attname);
-	}
-	return array;
 }
 
 ZEND_FUNCTION(spi_exec_query)
@@ -1764,7 +1425,7 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 				{
 					zval	   *hashref;
 
-					hashref = plphp_convert_from_cArray(tmp);
+					hashref = plphp_convert_from_pg_array(tmp);
 					zend_hash_next_index_insert(retval->value.ht,
 												(void *) &hashref,
 												sizeof(zval *), NULL);
@@ -1813,7 +1474,7 @@ plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 	sprintf(call, "plphp_proc_%u($_args_int, $_argc_int);",
 			fcinfo->flinfo->fn_oid);
 
-	zend_first_try
+	zend_try
 	{
 		if (zend_eval_string(call, retval, "plphp function call"
 							 TSRMLS_CC) == FAILURE)
@@ -1849,12 +1510,11 @@ plphp_call_php_trig(plphp_proc_desc *desc, FunctionCallInfo fcinfo,
 	sprintf(call, "plphp_proc_%u_trigger(&$_trigargs);",
 			fcinfo->flinfo->fn_oid);
 
-	zend_first_try
+	zend_try
 	{
 		if (zend_eval_string(call, retval, "plphp trigger call"
 							 TSRMLS_CC) == FAILURE)
 			plphp_elog(ERROR, "plphp: trigger call - failure");
-
 	}
 	zend_catch
 	{
