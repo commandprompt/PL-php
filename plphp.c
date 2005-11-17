@@ -816,9 +816,7 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 	Datum		retval;
 	char	   *retvalbuffer = NULL;
 
-	/*
-	 * Find or compile the function
-	 */
+	/* Find or compile the function */
 	desc = plphp_compile_function(fcinfo->flinfo->fn_oid, false);
 
 	PG(safe_mode) = desc->lanpltrusted;
@@ -826,8 +824,7 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 	/*
 	 * Call the PHP function.  In a SRF, this is called multiple times; we must
 	 * execute the function only the first time around -- the following
-	 * iterations must extract tuples from wherever the PHP array they are
-	 * stored in.
+	 * iterations must extract tuples from the PHP array they are stored in.
 	 */
 	if (!(desc->ret_type & PL_SET))
 		phpret = plphp_call_php_func(desc, fcinfo);
@@ -837,6 +834,19 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 			srf_phpret = plphp_call_php_func(desc, fcinfo);
 		phpret = srf_phpret;
 	}
+
+	/* Basic datatype checks */
+	if ((desc->ret_type & PL_SET) && (phpret->type != IS_ARRAY))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				 errmsg("function declared to return a set must return an array")));
+
+	if ((desc->ret_type & PL_ARRAY) && (phpret->type != IS_ARRAY))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				 errmsg("function declared to return array must return an array")));
+
+	/* FIXME -- do we need to do the same for tuples? */
 
 	/*
 	 * Disconnect from SPI manager and then create the return values datum (if
