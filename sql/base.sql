@@ -1,6 +1,52 @@
 --
--- Base types
+-- Base functionality.
 --
+
+-- Basic things: scalars and arrays.
+CREATE FUNCTION test_an_int() RETURNS integer
+LANGUAGE plphp AS $$
+	return 1;
+$$;
+SELECT test_an_int();
+SELECT * FROM test_an_int();
+
+CREATE FUNCTION test_an_array() RETURNS int[]
+LANGUAGE plphp AS $$
+	return array(1);
+$$;
+SELECT test_an_array();
+SELECT * FROM test_an_array();
+
+CREATE FUNCTION test_a_bogus_array() RETURNS int[]
+LANGUAGE plphp AS $$
+	return 1;
+$$;
+SELECT test_a_bogus_array();
+SELECT * FROM test_a_bogus_array();
+
+CREATE FUNCTION test_a_bogus_int() RETURNS integer
+LANGUAGE plphp AS $$
+	return array(1);
+$$;
+SELECT test_a_bogus_int();
+SELECT * FROM test_a_bogus_int();
+
+CREATE FUNCTION test_2dim_array() RETURNS int[]
+LANGUAGE plphp AS $$
+	return array(array(1, 2), array(3, 4));
+$$;
+SELECT test_2dim_array();
+SELECT * FROM test_2dim_array();
+
+CREATE FUNCTION test_2dim_array() RETURNS setof int[]
+LANGUAGE plphp AS $$
+	return array(
+		array( array(1, 2), array(3, 4) ),
+		array( array(5, 6), array(7, 8) ),
+		array( array(9, 10), array(11, 12) )
+		)
+$$;
+
 
 CREATE FUNCTION php_max (integer, integer) RETURNS integer
 STRICT LANGUAGE plphp AS $$

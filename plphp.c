@@ -469,14 +469,74 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 	return retval;
 }
 
+/*
+ * plphp_validator
+ *
+ * 		Validator function for checking the function's syntax at creation
+ * 		time
+ */
 Datum
 plphp_validator(PG_FUNCTION_ARGS)
 {
-	Oid		funcoid = PG_GETARG_OID(0);
-	/* Just a stub for now */
+	Oid				funcoid = PG_GETARG_OID(0);
+	Form_pg_proc	procForm;
+	HeapTuple		procTup;
+	char			tmpname[32];
+	char			funcname[NAMEDATALEN];
+	char		   *tmpsrc,
+				   *prosrc;
+	Datum			prosrcdatum;
+	bool			isnull;
 
-	/* Keep compiler quiet */
-	funcoid = InvalidOid;
+	/* Initialize interpreter */
+	plphp_init_all();
+
+	/* Grab the pg_proc tuple */
+	procTup = SearchSysCache(PROCOID,
+							 ObjectIdGetDatum(funcoid),
+							 0, 0, 0);
+	if (!HeapTupleIsValid(procTup))
+		elog(ERROR, "cache lookup failed for function %u", funcoid);
+
+	procForm = (Form_pg_proc) GETSTRUCT(procTup);
+
+	/* Get the function source code */
+	prosrcdatum = SysCacheGetAttr(PROCOID,
+								  procTup,
+								  Anum_pg_proc_prosrc,
+								  &isnull);
+	if (isnull)
+		plphp_elog(ERROR, "cache lookup yielded NULL prosrc");
+	prosrc = DatumGetCString(DirectFunctionCall1(textout,
+												 prosrcdatum));
+
+	/* Get the function name, for the error message */
+	StrNCpy(funcname, NameStr(procForm->proname), NAMEDATALEN);
+	ReleaseSysCache(procTup);
+
+	/* Create a PHP function creation statement */
+	snprintf(tmpname, sizeof(tmpname), "plphp_temp_%u", funcoid);
+	tmpsrc = (char *) palloc(strlen(prosrc) +
+							 strlen(tmpname) +
+							 strlen("function  ($args, $argc){ } "));
+	sprintf(tmpsrc, "function %s($args, $argc){%s}",
+			tmpname, prosrc);
+
+	/*
+	 * Delete the function from the PHP function table, just in case it
+	 * already existed.  This is quite unlikely, but still.
+	 */
+	zend_hash_del(CG(function_table), tmpname, strlen(tmpname) + 1);
+
+	/* Let the user see the fireworks */
+	if (zend_eval_string(tmpsrc, NULL,
+						 "plphp function temp source" TSRMLS_CC) == FAILURE)
+		plphp_elog(ERROR, "function \"%s\" does not validate", funcname);
+
+	pfree(tmpsrc);
+
+	/* Delete the newly-created function from the PHP function table. */
+	zend_hash_del(CG(function_table), tmpname, strlen(tmpname) + 1);
 
 	/* The result of a validator is ignored */
 	PG_RETURN_VOID();
@@ -1260,13 +1320,11 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 
 			for (i = 0; i < prodesc->nargs; i++)
 			{
-#if defined PG_VERSION_81_COMPAT
-				Datum argid = procStruct->proargtypes.values[i];
-#elif defined PG_VERSION_80_COMPAT
+#ifdef PG_VERSION_80_COMPAT
 				Datum argid = procStruct->proargtypes[i];
+#else
+				Datum argid = procStruct->proargtypes.values[i];
 #endif
-
-
 				typeTup = SearchSysCache(TYPEOID, argid, 0, 0, 0);
 
 				if (!HeapTupleIsValid(typeTup))
@@ -1339,7 +1397,7 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 		if (zend_eval_string(complete_proc_source, NULL,
 							 "plphp function source" TSRMLS_CC) == FAILURE)
 		{
-			plphp_elog(ERROR, "plphp: unable to compile function \"%s\"",
+			plphp_elog(ERROR, "unable to compile function \"%s\"",
 					   prodesc->proname);
 		}
 
