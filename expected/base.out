@@ -50,22 +50,6 @@ SELECT test_a_bogus_int();
 ERROR:  this plphp function cannot return arrays
 SELECT * FROM test_a_bogus_int();
 ERROR:  this plphp function cannot return arrays
-CREATE FUNCTION test_2dim_array() RETURNS int[]
-LANGUAGE plphp AS $$
-	return array(array(1, 2), array(3, 4));
-$$;
-SELECT test_2dim_array();
- test_2dim_array 
------------------
- {{1,2},{3,4}}
-(1 row)
-
-SELECT * FROM test_2dim_array();
- test_2dim_array 
------------------
- {{1,2},{3,4}}
-(1 row)
-
 CREATE FUNCTION test_ndim_array(int, int) RETURNS int[]
 LANGUAGE plphp AS $$
     if (!function_exists('bar')) {
