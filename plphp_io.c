@@ -92,6 +92,7 @@ plphp_convert_to_pg_array(zval *array)
 					tmp = plphp_convert_to_pg_array(element[0]);
 					appendStringInfo(&str, "%s", tmp);
 					pfree(tmp);
+					break;
 				default:
 					elog(ERROR, "unrecognized element type %d",
 						 Z_TYPE_P(element[0]));
@@ -121,7 +122,7 @@ plphp_convert_from_pg_array(char *input)
 	int			i;
 	StringInfoData str;
 	
-	str = initStringInfo(&str);
+	initStringInfo(&str);
 
 	MAKE_STD_ZVAL(retval);
 	array_init(retval);
@@ -137,40 +138,13 @@ plphp_convert_from_pg_array(char *input)
 	}
 	appendStringInfoChar(&str, ';');
 
-	if (zend_eval_string(work, retval,
+	if (zend_eval_string(str.data, retval,
 						 "plphp array input parameter" TSRMLS_CC) == FAILURE)
 		elog(ERROR, "plphp: convert to internal representation failure");
 
 	pfree(str.data);
 
 	return retval;
-}
-
-zval *
-plphp_get_row(zval *array, int index)
-{
-	zval	  **element;
-	HashPosition pos;
-	int			row = 0;
-
-	if (!array)
-		return NULL;
-
-	if (Z_TYPE_P(array) == IS_ARRAY)
-	{
-		for (zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(array), &pos);
-			 zend_hash_get_current_data_ex(Z_ARRVAL_P(array),
-										   (void **) &element,
-										   &pos) == SUCCESS;
-			 zend_hash_move_forward_ex(Z_ARRVAL_P(array), &pos))
-		{
-			if (row == index)
-				return element[0];
-			row++;
-		}
-	}
-
-	elog(ERROR, "return value is not an array");
 }
 
 zval *
@@ -243,58 +217,13 @@ plphp_attr_count(zval *array)
 }
 
 /*
- * plphp_get_rows_num
- *
- * 		Return the number of "tuples" in the given zval.
- *
- * Note that if it's a simple array of scalar values, it's considered
- * a single tuple.  If it's an array of arrays, then it's considered
- * to be a set of tuples, and we count the number of elements of that
- * array that are in turn arrays.
- *
- * So for constructs like
- * array(1, 2, 3)
- * array(array(1, 2, 3))
- *
- * it returns 1, while
- *
- * array(array(1, 2, 3), array(1, 2, 3))
- * returns 2, as does
- * array(array(1, 2, 3), 2, array(1, 2, 3))
- * (because the middle element is not an array, so it's not counted!)
- * Note that the latter is bogus ...
- */
-int
-plphp_get_rows_num(zval *array)
-{
-	zval	  **element;
-	HashPosition pos;
-	int			rows = 0;
-
-	if (Z_TYPE_P(array) != IS_ARRAY)
-		elog(ERROR, "plphp: wrong type: %i", array->type);
-
-	for (zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(array), &pos);
-		 zend_hash_get_current_data_ex(Z_ARRVAL_P(array),
-									   (void **) &element,
-									   &pos) == SUCCESS;
-		 zend_hash_move_forward_ex(Z_ARRVAL_P(array), &pos))
-	{
-		if (Z_TYPE_P(element[0]) == IS_ARRAY)
-			rows++;
-	}
-
-	return ((rows == 0) ? 1 : rows);
-}
-
-/*
  * plphp_get_attr_names
  *
  * 		Return an array filled with the key names of the passed zval,
  * 		which must be an array of scalar values.
  */
 char **
-plphp_get_attr_name(zval *array)
+plphp_get_attr_names(zval *array)
 {
 	char	  **rv;
 	zval	  **element;
@@ -318,7 +247,7 @@ plphp_get_attr_name(zval *array)
 			elog(ERROR, "plphp: input element must not be an array");
 
 		rv[i] = (char *) palloc(pos->nKeyLength * sizeof(char));
-		strcpy(rv[i], strpos->arKey);
+		strcpy(rv[i], pos->arKey);
 		i++;
 	}
 

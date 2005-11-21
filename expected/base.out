@@ -1,6 +1,123 @@
 --
--- Base types
+-- Base functionality.
 --
+-- Basic things: scalars and arrays.
+CREATE FUNCTION test_an_int() RETURNS integer
+LANGUAGE plphp AS $$
+	return 1;
+$$;
+SELECT test_an_int();
+ test_an_int 
+-------------
+           1
+(1 row)
+
+SELECT * FROM test_an_int();
+ test_an_int 
+-------------
+           1
+(1 row)
+
+CREATE FUNCTION test_an_array() RETURNS int[]
+LANGUAGE plphp AS $$
+	return array(1);
+$$;
+SELECT test_an_array();
+ test_an_array 
+---------------
+ {1}
+(1 row)
+
+SELECT * FROM test_an_array();
+ test_an_array 
+---------------
+ {1}
+(1 row)
+
+CREATE FUNCTION test_a_bogus_array() RETURNS int[]
+LANGUAGE plphp AS $$
+	return 1;
+$$;
+SELECT test_a_bogus_array();
+ERROR:  function declared to return array must return an array
+SELECT * FROM test_a_bogus_array();
+ERROR:  function declared to return array must return an array
+CREATE FUNCTION test_a_bogus_int() RETURNS integer
+LANGUAGE plphp AS $$
+	return array(1);
+$$;
+SELECT test_a_bogus_int();
+ERROR:  this plphp function cannot return arrays
+SELECT * FROM test_a_bogus_int();
+ERROR:  this plphp function cannot return arrays
+CREATE FUNCTION test_2dim_array() RETURNS int[]
+LANGUAGE plphp AS $$
+	return array(array(1, 2), array(3, 4));
+$$;
+SELECT test_2dim_array();
+ test_2dim_array 
+-----------------
+ {{1,2},{3,4}}
+(1 row)
+
+SELECT * FROM test_2dim_array();
+ test_2dim_array 
+-----------------
+ {{1,2},{3,4}}
+(1 row)
+
+CREATE FUNCTION test_ndim_array(int, int) RETURNS int[]
+LANGUAGE plphp AS $$
+    if (!function_exists('bar')) {
+    function bar($a, $b) {
+        if ($a == 1) {
+            return array($b, $b+1);
+        }
+        return array(bar($a-1, $b), bar($a-1, $b+1));
+    }
+    }
+
+    $return = bar($args[0], $args[1]);
+    return $return;
+$$;
+SELECT test_ndim_array(1, 1);
+ test_ndim_array 
+-----------------
+ {1,2}
+(1 row)
+
+SELECT test_ndim_array(2, 1);
+ test_ndim_array 
+-----------------
+ {{1,2},{2,3}}
+(1 row)
+
+SELECT test_ndim_array(3, 1);
+        test_ndim_array        
+-------------------------------
+ {{{1,2},{2,3}},{{2,3},{3,4}}}
+(1 row)
+
+SELECT test_ndim_array(4, 1);
+                        test_ndim_array                        
+---------------------------------------------------------------
+ {{{{1,2},{2,3}},{{2,3},{3,4}}},{{{2,3},{3,4}},{{3,4},{4,5}}}}
+(1 row)
+
+SELECT test_ndim_array(5, 1);
+                                                        test_ndim_array                                                        
+-------------------------------------------------------------------------------------------------------------------------------
+ {{{{{1,2},{2,3}},{{2,3},{3,4}}},{{{2,3},{3,4}},{{3,4},{4,5}}}},{{{{2,3},{3,4}},{{3,4},{4,5}}},{{{3,4},{4,5}},{{4,5},{5,6}}}}}
+(1 row)
+
+SELECT test_ndim_array(6, 1);
+                                                                                                                        test_ndim_array                                                                                                                        
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ {{{{{{1,2},{2,3}},{{2,3},{3,4}}},{{{2,3},{3,4}},{{3,4},{4,5}}}},{{{{2,3},{3,4}},{{3,4},{4,5}}},{{{3,4},{4,5}},{{4,5},{5,6}}}}},{{{{{2,3},{3,4}},{{3,4},{4,5}}},{{{3,4},{4,5}},{{4,5},{5,6}}}},{{{{3,4},{4,5}},{{4,5},{5,6}}},{{{4,5},{5,6}},{{5,6},{6,7}}}}}}
+(1 row)
+
+SELECT test_ndim_array(7, 1);
+ERROR:  number of array dimensions (6) exceeds the maximum allowed (6)
 CREATE FUNCTION php_max (integer, integer) RETURNS integer
 STRICT LANGUAGE plphp AS $$
 	if ($args[0] > $args[1]) {

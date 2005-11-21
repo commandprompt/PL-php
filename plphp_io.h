@@ -29,9 +29,8 @@ zval *plphp_convert_from_pg_array(char *input);
 zval *plphp_get_row(zval * array, int index);
 char *plphp_get_elem(zval * array, char *key);
 int plphp_attr_count(zval *array);
-int plphp_get_rows_num(zval *array);
 int plphp_attr_count_r(zval *array);
-char **plphp_get_attr_name(zval *array);
+char **plphp_get_attr_names(zval *array);
 zval *plphp_get_new(zval *array);
 zval *plphp_get_pelem(zval *array, char *key);
 

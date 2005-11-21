@@ -151,9 +151,8 @@ void	   *apr_pool_userdata_get = NULL;
 typedef enum pl_type
 {
 	PL_TUPLE = 1 << 0,
-	PL_SET = 1 << 1,
-	PL_ARRAY = 1 << 2,
-	PL_PSEUDO = 1 << 3
+	PL_ARRAY = 1 << 1,
+	PL_PSEUDO = 1 << 2
 } pl_type;
 
 /*
@@ -181,7 +180,6 @@ typedef struct plphp_proc_desc
  */
 static bool plphp_first_call = true;
 static zval *plphp_proc_array = NULL;
-static zval *srf_phpret = NULL;			/* keep returned value */
 
 /*
  * Forward declarations
@@ -202,8 +200,6 @@ static plphp_proc_desc *plphp_compile_function(Oid, int);
 static zval *plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc);
 static zval *plphp_call_php_func(plphp_proc_desc *, FunctionCallInfo);
 static zval *plphp_call_php_trig(plphp_proc_desc *, FunctionCallInfo, zval *);
-
-static Datum plphp_srf_handler(PG_FUNCTION_ARGS, plphp_proc_desc *);
 
 static void plphp_elog(int elevel, char *fmt, ...);
 static void plphp_error_cb(int type, const char *filename, const uint lineno,
@@ -595,7 +591,7 @@ plphp_modify_tuple(zval *pltd, TriggerData *tdata)
 	if (Z_TYPE_P(plntup) != IS_ARRAY)
 		elog(ERROR, "plphp: $_TD['new'] is not an array");
 
-	plkeys = plphp_get_attr_name(plntup);
+	plkeys = plphp_get_attr_names(plntup);
 	natts = plphp_attr_count(plntup);
 
 	if (natts != tupdesc->natts)
@@ -882,26 +878,10 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 
 	PG(safe_mode) = desc->lanpltrusted;
 
-	/*
-	 * Call the PHP function.  In a SRF, this is called multiple times; we must
-	 * execute the function only the first time around -- the following
-	 * iterations must extract tuples from the PHP array they are stored in.
-	 */
-	if (!(desc->ret_type & PL_SET))
-		phpret = plphp_call_php_func(desc, fcinfo);
-	else
-	{
-		if (SRF_IS_FIRSTCALL())
-			srf_phpret = plphp_call_php_func(desc, fcinfo);
-		phpret = srf_phpret;
-	}
+	/* Call the PHP function. */
+	phpret = plphp_call_php_func(desc, fcinfo);
 
 	/* Basic datatype checks */
-	if ((desc->ret_type & PL_SET) && (phpret->type != IS_ARRAY))
-		ereport(ERROR,
-				(errcode(ERRCODE_DATATYPE_MISMATCH),
-				 errmsg("function declared to return a set must return an array")));
-
 	if ((desc->ret_type & PL_ARRAY) && (phpret->type != IS_ARRAY))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
@@ -953,13 +933,9 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 						 phpret->value.str.val);
 				break;
 			case IS_ARRAY:
-				if ((desc->ret_type & PL_ARRAY) && !(desc->ret_type & PL_SET))
-				{
-					/* FIXME -- buffer overrun here */
+				if (desc->ret_type & PL_ARRAY)
 					retvalbuffer = plphp_convert_to_pg_array(phpret);
-				}
-				else if ((desc->ret_type & PL_TUPLE) &&
-						 !(desc->ret_type & PL_SET))
+				else if (desc->ret_type & PL_TUPLE)
 				{
 					TupleDesc	td;
 					int			i;
@@ -985,7 +961,6 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 
 					for (i = 0; i < td->natts; i++)
 					{
-
 						key = SPI_fname(td, i + 1);
 						val = plphp_get_elem(phpret, key);
 						if (val)
@@ -998,9 +973,8 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 					retval = HeapTupleGetDatum(tup);
 
 				}
-				else if (desc->ret_type & PL_SET)
-					retval = plphp_srf_handler(fcinfo, desc);
 				else
+					/* FIXME -- should return the thing as a string? */
 					elog(ERROR, "this plphp function cannot return arrays");
 				break;
 			case IS_NULL:
@@ -1020,8 +994,7 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 		retval = (Datum) 0;
 	}
 
-	if ((!fcinfo->isnull) && !(desc->ret_type & PL_TUPLE) &&
-		!(desc->ret_type & PL_SET))
+	if (!fcinfo->isnull && !(desc->ret_type & PL_TUPLE))
 	{
 		retval = FunctionCall3(&desc->result_in_func,
 							   PointerGetDatum(retvalbuffer),
@@ -1290,7 +1263,13 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 				}
 			}
 			if (procStruct->proretset)
-				prodesc->ret_type |= PL_SET;
+			{
+				free(prodesc->proname);
+				free(prodesc);
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("plphp functions cannot return sets")));
+			}
 
 			prodesc->ret_oid = procStruct->prorettype;
 
@@ -1657,159 +1636,6 @@ plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc)
 	}
 
 	return output;
-}
-
-/*
- * Handle a SRF function.
- */
-static Datum
-plphp_srf_handler(FunctionCallInfo fcinfo, plphp_proc_desc *prodesc)
-{
-	FuncCallContext *funcctx;
-	TupleDesc		tupdesc;
-	TupleTableSlot *slot;
-	AttInMetadata  *attinmeta = NULL;
-	int				call_cntr;
-	int				max_calls;
-	char		  **values = NULL;
-
-	if (SRF_IS_FIRSTCALL())
-	{
-		MemoryContext oldcontext;
-
-		if (srf_phpret->type != IS_ARRAY)
-			plphp_elog(ERROR,
-				   	   "this function must return a reference to an array");
-
-		funcctx = SRF_FIRSTCALL_INIT();
-		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
-
-		if (prodesc->ret_type & PL_TUPLE)
-		{
-			/* Build a tupledesc */
-			tupdesc =
-				plphp_get_function_tupdesc(prodesc->ret_oid,
-					  					   (ReturnSetInfo *) fcinfo->resultinfo);
-			tupdesc = CreateTupleDescCopy(tupdesc);
-			funcctx->tuple_desc = tupdesc;
-
-			/* total number of tuples to be returned */
-			funcctx->max_calls = plphp_get_rows_num(srf_phpret);
-
-			/* allocate a slot for a tuple with this tupdesc */
-			slot = TupleDescGetSlot(tupdesc);
-
-			/* assign slot to function context */
-			funcctx->slot = slot;
-
-			/*
-			 * generate attribute metadata needed later to produce tuples from
-			 * raw C strings
-			 */
-			attinmeta = TupleDescGetAttInMetadata(tupdesc);
-			funcctx->attinmeta = attinmeta;
-		}
-		else
-			funcctx->max_calls = plphp_attr_count(srf_phpret);
-
-		MemoryContextSwitchTo(oldcontext);
-	}
-	funcctx = SRF_PERCALL_SETUP();
-
-	if (prodesc->ret_type & PL_TUPLE)
-	{
-		slot = funcctx->slot;
-		attinmeta = funcctx->attinmeta;
-	}
-
-	call_cntr = funcctx->call_cntr;
-	max_calls = funcctx->max_calls;
-	tupdesc = funcctx->tuple_desc;
-
-	/* do when there is more left to send */
-	if (call_cntr < max_calls)	
-	{
-		Datum		result;
-		int			i;
-		zval	   *zRow;
-
-		if (prodesc->ret_type & PL_TUPLE)
-		{
-			HeapTuple	tuple;
-			char	   *key;
-
-			/*
-			 * Prepare a values array for storage in our slot.  This should be
-			 * an array of C strings which will be processed later by the type
-			 * input functions.
-			 */
-			values = (char **) palloc(tupdesc->natts * sizeof(char *));
-			zRow = plphp_get_row(srf_phpret, call_cntr);
-
-			/* fill in each value */
-			for (i = 0; i < tupdesc->natts; i++)
-			{
-				key = SPI_fname(tupdesc, i + 1);
-				/* possibly NULL, but that's OK */
-				values[i] = plphp_get_elem(zRow, key);
-			}
-
-			/* Build the tuple Datum */
-			tuple = BuildTupleFromCStrings(attinmeta, values);
-			result = TupleGetDatum(slot, tuple);
-		}
-		else
-		{
-			StringInfoData	str;
-			char		   *retval;
-
-			zRow = plphp_get_row(srf_phpret, call_cntr);
-
-			switch (zRow->type)
-			{
-				case IS_LONG:
-					initStringInto(&str);
-					appendStringInfo(&str, "%ld", zRow->value.lval);
-					retval = str.data;
-					break;
-				case IS_DOUBLE:
-					initStringInto(&str);
-					appendStringInfo(&str, "%e", zRow->value.dval);
-					retval = str.data;
-					break;
-				case IS_STRING:
-					initStringInto(&str);
-					appendStringInfo(&str, "%s", zRow->value.str.val);
-					retval = str.data;
-					break;
-				case IS_ARRAY:
-					retval = plphp_convert_to_pg_array(zRow);
-					break;
-				case IS_NULL:
-					fcinfo->isnull = true;
-					break;
-				default:
-					plphp_elog(ERROR, "plphp functions cannot return type %i",
-							   zRow->type);
-			}
-
-			if (!fcinfo->isnull)
-			{
-				result = FunctionCall3(&prodesc->result_in_func,
-									   PointerGetDatum(retval),
-									   ObjectIdGetDatum(prodesc->result_typioparam),
-									   Int32GetDatum(-1));
-				pfree(retval);
-			}
-			else
-				result = (Datum) 0;
-		}
-
-		SRF_RETURN_NEXT(funcctx, result);
-	}
-	else
-		/* do when there is no more left */
-		SRF_RETURN_DONE(funcctx);
 }
 
 /*
