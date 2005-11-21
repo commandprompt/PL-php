@@ -31,13 +31,6 @@ $$;
 SELECT test_a_bogus_int();
 SELECT * FROM test_a_bogus_int();
 
-CREATE FUNCTION test_2dim_array() RETURNS int[]
-LANGUAGE plphp AS $$
-	return array(array(1, 2), array(3, 4));
-$$;
-SELECT test_2dim_array();
-SELECT * FROM test_2dim_array();
-
 CREATE FUNCTION test_ndim_array(int, int) RETURNS int[]
 LANGUAGE plphp AS $$
     if (!function_exists('bar')) {
