@@ -24,7 +24,7 @@
 #include "php.h"
 
 zval *plphp_hash_from_tuple(HeapTuple tuple, TupleDesc tupdesc);
-int plphp_convert_to_pg_array(zval * array, char *buffer);
+char *plphp_convert_to_pg_array(zval *array);
 zval *plphp_convert_from_pg_array(char *input);
 zval *plphp_get_row(zval * array, int index);
 char *plphp_get_elem(zval * array, char *key);

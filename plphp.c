@@ -44,6 +44,7 @@
 #include "executor/spi.h"
 #include "fmgr.h"
 #include "funcapi.h"			/* needed for SRF support */
+#include "lib/stringinfo.h"
 #include "utils/builtins.h"		/* needed for define oidout */
 #include "utils/elog.h"
 #include "utils/lsyscache.h"
@@ -955,10 +956,7 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 				if ((desc->ret_type & PL_ARRAY) && !(desc->ret_type & PL_SET))
 				{
 					/* FIXME -- buffer overrun here */
-					int		length = plphp_attr_count_r(phpret);
-					retvalbuffer = (char *) palloc(length * 10);
-					memset(retvalbuffer, 0x0, length * 10);
-					plphp_convert_to_pg_array(phpret, retvalbuffer);
+					retvalbuffer = plphp_convert_to_pg_array(phpret);
 				}
 				else if ((desc->ret_type & PL_TUPLE) &&
 						 !(desc->ret_type & PL_SET))
@@ -1762,32 +1760,30 @@ plphp_srf_handler(FunctionCallInfo fcinfo, plphp_proc_desc *prodesc)
 		}
 		else
 		{
-			char	   *retvalbuffer = NULL;
+			StringInfoData	str;
+			char		   *retval;
 
-			/* FIXME -- we have to rewrite this, probably using StringInfo. */
 			zRow = plphp_get_row(srf_phpret, call_cntr);
+
 			switch (zRow->type)
 			{
 				case IS_LONG:
-					retvalbuffer = (char *) palloc(255);
-					memset(retvalbuffer, 0x0, 255);
-					sprintf(retvalbuffer, "%ld", zRow->value.lval);
+					initStringInto(&str);
+					appendStringInfo(&str, "%ld", zRow->value.lval);
+					retval = str.data;
 					break;
 				case IS_DOUBLE:
-					retvalbuffer = (char *) palloc(255);
-					memset(retvalbuffer, 0x0, 255);
-					sprintf(retvalbuffer, "%e", zRow->value.dval);
+					initStringInto(&str);
+					appendStringInfo(&str, "%e", zRow->value.dval);
+					retval = str.data;
 					break;
 				case IS_STRING:
-					retvalbuffer = (char *) palloc(zRow->value.str.len + 1);
-					memset(retvalbuffer, 0x0, strlen(retvalbuffer));
-					sprintf(retvalbuffer, "%s", zRow->value.str.val);
+					initStringInto(&str);
+					appendStringInfo(&str, "%s", zRow->value.str.val);
+					retval = str.data;
 					break;
 				case IS_ARRAY:
-					retvalbuffer =
-						(char *) palloc(plphp_attr_count_r(zRow) * 2);
-					memset(retvalbuffer, 0x0, strlen(retvalbuffer));
-					plphp_convert_to_pg_array(zRow, retvalbuffer);
+					retval = plphp_convert_to_pg_array(zRow);
 					break;
 				case IS_NULL:
 					fcinfo->isnull = true;
@@ -1800,10 +1796,10 @@ plphp_srf_handler(FunctionCallInfo fcinfo, plphp_proc_desc *prodesc)
 			if (!fcinfo->isnull)
 			{
 				result = FunctionCall3(&prodesc->result_in_func,
-									   PointerGetDatum(retvalbuffer),
+									   PointerGetDatum(retval),
 									   ObjectIdGetDatum(prodesc->result_typioparam),
 									   Int32GetDatum(-1));
-				pfree(retvalbuffer);
+				pfree(retval);
 			}
 			else
 				result = (Datum) 0;

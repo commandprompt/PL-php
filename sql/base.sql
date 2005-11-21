@@ -38,14 +38,34 @@ $$;
 SELECT test_2dim_array();
 SELECT * FROM test_2dim_array();
 
-CREATE FUNCTION test_2dim_array() RETURNS setof int[]
+CREATE FUNCTION test_3dim_array() RETURNS setof int[]
 LANGUAGE plphp AS $$
 	return array(
 		array( array(1, 2), array(3, 4) ),
 		array( array(5, 6), array(7, 8) ),
 		array( array(9, 10), array(11, 12) )
-		)
+		);
 $$;
+
+SELECT test_3dim_array();
+SELECT * FROM test_3dim_array();
+
+CREATE or replace FUNCTION test_ndim_array(int, int) RETURNS setof int[]
+LANGUAGE plphp AS $$
+    if (!function_exists('bar')) {
+    function bar($a, $b) {
+        if ($a == 1) {
+            return array($b, $b+1);
+        }
+        return array(bar($a-1, $b), bar($a-1, $b+1));
+    }
+    }
+
+    $return = bar($args[0], $args[1]);
+    return $return;
+$$;
+		
+		
 
 
 CREATE FUNCTION php_max (integer, integer) RETURNS integer
