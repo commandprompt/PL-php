@@ -16,8 +16,7 @@
 
 /*
  * plphp_hash_from_tuple
- *
- *		 Build a PHP hash from a tuple
+ *		 Build a PHP hash from a tuple.
  */
 zval *
 plphp_hash_from_tuple(HeapTuple tuple, TupleDesc tupdesc)
@@ -38,7 +37,8 @@ plphp_hash_from_tuple(HeapTuple tuple, TupleDesc tupdesc)
 
 		/* and get its value */
 		if ((attdata = SPI_getvalue(tuple, tupdesc, i + 1)) != NULL)
-			add_assoc_string(array, attname, attdata, 1);
+			/* "false" means don't strdup the string */
+			add_assoc_string(array, attname, attdata, false);
 		else
 			add_assoc_null(array, attname);
 	}
@@ -47,7 +47,6 @@ plphp_hash_from_tuple(HeapTuple tuple, TupleDesc tupdesc)
 
 /*
  * plphp_convert_to_pg_array
- *
  * 		Convert a zval into a Postgres text array representation.
  *
  * The return value is palloc'ed in the current memory context and
@@ -56,15 +55,15 @@ plphp_hash_from_tuple(HeapTuple tuple, TupleDesc tupdesc)
 char *
 plphp_convert_to_pg_array(zval *array)
 {
-	int			arr_size = 0;
+	int			arr_size;
 	zval	  **element;
-	HashPosition pos;
 	int			i = 0;
+	HashPosition 	pos;
 	StringInfoData	str;
 	
 	initStringInfo(&str);
 
-	arr_size = plphp_attr_count(array);
+	arr_size = zend_hash_num_elements(Z_ARRVAL_P(array));
 
 	appendStringInfoChar(&str, '{');
 	if (Z_TYPE_P(array) == IS_ARRAY)
@@ -86,7 +85,7 @@ plphp_convert_to_pg_array(zval *array)
 					appendStringInfo(&str, "%e", element[0]->value.dval);
 					break;
 				case IS_STRING:
-					appendStringInfo(&str, "%s", element[0]->value.str.val);
+					appendStringInfo(&str, "\"%s\"", element[0]->value.str.val);
 					break;
 				case IS_ARRAY:
 					tmp = plphp_convert_to_pg_array(element[0]);
@@ -111,9 +110,10 @@ plphp_convert_to_pg_array(zval *array)
 
 /*
  * plphp_convert_from_pg_array
- *
  * 		Convert a Postgres text array representation to a PHP array
  * 		(zval type thing).
+ *
+ * FIXME -- does not work if there are embedded {'s in the input value.
  */
 zval *
 plphp_convert_from_pg_array(char *input)
@@ -130,7 +130,7 @@ plphp_convert_from_pg_array(char *input)
 	for (i = 0; i < strlen(input); i++)
 	{
 		if (input[i] == '{')
-			appendStringInfo(&str, "%s", "array(");
+			appendStringInfoString(&str, "array(");
 		else if (input[i] == '}')
 			appendStringInfoChar(&str, ')');
 		else
@@ -199,47 +199,6 @@ plphp_get_elem(zval *array, char *key)
 		else if (Z_TYPE_P(element) == IS_STRING)
 			return element->value.str.val;
 	}
-	return NULL;
-}
-
-/*
- * plphp_attr_count
- * 		Return the number of elements in the passed array.
- *
- * Note that it doesn't count "second level" arrays, so if it gets
- * e.g. an array of two arrays, it returns 2.
- */
-int
-plphp_attr_count(zval *array)
-{
-	return zend_hash_num_elements(Z_ARRVAL_P(array));
-}
-
-/*
- * plphp_get_new
- *
- * 		Return a pointer to the zval of the "new" element in the passed
- * 		array.  This is used to rebuild the return tuple in the case of
- * 		a BEFORE-event trigger that modifies the NEW pseudo-tuple.
- */
-zval *
-plphp_get_new(zval *array)
-{
-	zval	  **element;
-
-	if (zend_hash_find(array->value.ht,
-					   "new", strlen("new") + 1,
-					   (void **) &element) == SUCCESS)
-	{
-		if (Z_TYPE_P(element[0]) == IS_ARRAY)
-			return element[0];
-
-		elog(ERROR, "plphp: field $_TD['new'] must be an array");
-	}
-
-	elog(ERROR, "plphp: field $_TD['new'] not found");
-
-	/* keep compiler quiet */
 	return NULL;
 }
 

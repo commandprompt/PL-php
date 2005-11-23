@@ -587,6 +587,7 @@ plphp_modify_tuple(zval *outdata, TriggerData *tdata)
 	TupleDesc	tupdesc;
 	HeapTuple	rettuple;
 	zval	   *newtup;
+	zval	  **element;
 	char	  **vals;
 	int			i;
 	AttInMetadata *attinmeta;
@@ -601,21 +602,27 @@ plphp_modify_tuple(zval *outdata, TriggerData *tdata)
 
 	oldcxt = MemoryContextSwitchTo(tmpcxt);
 
-	/*
-	 * FIXME -- why not do this thing here instead of calling
-	 * some other function?
-	 */
-	newtup = plphp_get_new(outdata);
+	/* Fetch "new" from $_TD */
+	if (zend_hash_find(outdata->value.ht,
+					   "new", strlen("new") + 1,
+					   (void **) &element) != SUCCESS)
+		elog(ERROR, "$_TD['new'] not found");
+
+	if (Z_TYPE_P(element[0]) != IS_ARRAY)
+		elog(ERROR, "$_TD['new'] must be an array");
+	newtup = element[0];
 
 	/* Fetch the tupledesc and metadata */
 	tupdesc = tdata->tg_relation->rd_att;
 	attinmeta = TupleDescGetAttInMetadata(tupdesc);
 
-	if (tupdesc->natts > plphp_attr_count(newtup))
+	i = zend_hash_num_elements(Z_ARRVAL_P(newtup));
+
+	if (tupdesc->natts > i)
 		ereport(ERROR,
 				(errmsg("incorrect number of keys in $_TD['new']"),
-				 errdetail("at least %d expected, %d found",
-						   tupdesc->natts, plphp_attr_count(newtup))));
+				 errdetail("At least %d expected, %d found.",
+						   tupdesc->natts, i)));
 
 	vals = (char **) palloc(tupdesc->natts * sizeof(char *));
 
@@ -701,10 +708,7 @@ plphp_trig_build_args(FunctionCallInfo fcinfo)
 
 	/* The basic variables */
 	add_assoc_string(retval, "name", tdata->tg_trigger->tgname, 1);
-    add_assoc_string(retval, "relid",
-                     DatumGetCString(DirectFunctionCall1(oidout,
-                                                         ObjectIdGetDatum(tdata->tg_relation->rd_id))),
-                     1);
+    add_assoc_long(retval, "relid", tdata->tg_relation->rd_id);
 	add_assoc_string(retval, "relname", SPI_getrelname(tdata->tg_relation), 1);
 
 	/* EVENT */

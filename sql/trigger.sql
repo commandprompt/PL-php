@@ -44,35 +44,6 @@ update trigfunc_table set a = 2 where a = 1;
 
 delete from trigfunc_table where a = 2;
 
--- Test SKIP and MODIFY
-CREATE FUNCTION trigfunc_ins() RETURNS trigger LANGUAGE plphp AS $$
-	$a = $_TD['new']['a'];
-	if ($a == 1) {
-		return 'SKIP';
-	} else if ($a == 2) {
-		$_TD['new']['a'] = 3;
-		return 'MODIFY';
-	} else if ($a == 4) {
-		return NULL;
-	} else if ($a == 5) {
-		return 'gibberish';
-	} else {
-		pg_raise('error', "value a=$a is not allowed");
-	}
-$$;
-
-create table b (a int);
-create trigger trigtest12 before insert on b for each row execute procedure trigfunc_ins();
-
-
-insert into b values (1);
-insert into b values (2);
-insert into b values (3);
-insert into b values (4);
-insert into b values (5);
-insert into b values (6);
-select * from b;
-
 -- Add an additional attribute to NEW
 CREATE FUNCTION trigfunc_test1() RETURNS trigger LANGUAGE plphp AS $$
 	$_TD['new']['a'] = 'foo';
@@ -145,3 +116,15 @@ CREATE OR REPLACE FUNCTION numbers_trig() RETURNS TRIGGER LANGUAGE plphp AS $$
 $$;
 INSERT INTO numbers DEFAULT VALUES;
 SELECT * FROM numbers;
+
+CREATE TABLE test_rel (tbl name, relid oid);
+CREATE FUNCTION test_rel() RETURNS TRIGGER LANGUAGE plphp AS $$
+	$_TD['new']['tbl'] = $_TD['relname'];
+	$_TD['new']['relid'] = $_TD['relid'];
+	return 'MODIFY';
+$$;
+CREATE TRIGGER test_rel BEFORE INSERT ON test_rel
+FOR EACH ROW EXECUTE PROCEDURE test_rel();
+
+INSERT INTO test_rel values ('foo', '0');
+SELECT tbl = 'test_rel', relid = 'test_rel'::regclass FROM test_rel;
