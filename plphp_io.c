@@ -204,54 +204,15 @@ plphp_get_elem(zval *array, char *key)
 
 /*
  * plphp_attr_count
- *
  * 		Return the number of elements in the passed array.
  *
- * Note that it doesn't count "second level" arrays, so if we get
- * e.g. an array of two arrays, we return 2.
+ * Note that it doesn't count "second level" arrays, so if it gets
+ * e.g. an array of two arrays, it returns 2.
  */
 int
 plphp_attr_count(zval *array)
 {
 	return zend_hash_num_elements(Z_ARRVAL_P(array));
-}
-
-/*
- * plphp_get_attr_names
- *
- * 		Return an array filled with the key names of the passed zval,
- * 		which must be an array of scalar values.
- */
-char **
-plphp_get_attr_names(zval *array)
-{
-	char	  **rv;
-	zval	  **element;
-	HashPosition pos;
-	int			cc = 0,
-				i = 0;
-
-	cc = plphp_attr_count(array);
-	rv = (char **) palloc(cc * sizeof(char *));
-
-	if (Z_TYPE_P(array) != IS_ARRAY)
-		elog(ERROR, "plphp: input type must be an array");
-
-	for (zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(array), &pos);
-		 zend_hash_get_current_data_ex(Z_ARRVAL_P(array),
-									   (void **) &element,
-									   &pos) == SUCCESS;
-		 zend_hash_move_forward_ex(Z_ARRVAL_P(array), &pos))
-	{
-		if (Z_TYPE_P(element[0]) == IS_ARRAY)
-			elog(ERROR, "plphp: input element must not be an array");
-
-		rv[i] = (char *) palloc(pos->nKeyLength * sizeof(char));
-		strcpy(rv[i], pos->arKey);
-		i++;
-	}
-
-	return rv;
 }
 
 /*
@@ -266,17 +227,19 @@ plphp_get_new(zval *array)
 {
 	zval	  **element;
 
-	if (zend_hash_find
-		(array->value.ht, "new", sizeof("new"),
-		 (void **) &element) == SUCCESS)
+	if (zend_hash_find(array->value.ht,
+					   "new", strlen("new") + 1,
+					   (void **) &element) == SUCCESS)
 	{
 		if (Z_TYPE_P(element[0]) == IS_ARRAY)
 			return element[0];
-		else
-			elog(ERROR, "plphp: field $_TD['new'] must be an array");
+
+		elog(ERROR, "plphp: field $_TD['new'] must be an array");
 	}
-	else
-		elog(ERROR, "plphp: field $_TD['new'] not found");
+
+	elog(ERROR, "plphp: field $_TD['new'] not found");
+
+	/* keep compiler quiet */
 	return NULL;
 }
 

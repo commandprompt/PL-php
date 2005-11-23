@@ -180,6 +180,8 @@ typedef struct plphp_proc_desc
  */
 static bool plphp_first_call = true;
 static zval *plphp_proc_array = NULL;
+/* for PHP write/flush */
+static StringInfo currmsg = NULL;
 
 /*
  * Forward declarations
@@ -210,6 +212,10 @@ ZEND_FUNCTION(spi_fetch_row);
 ZEND_FUNCTION(pg_raise);
 
 /*
+ * FIXME -- this comment is quite misleading actually, which is not surprising
+ * since it came verbatim from PL/pgSQL.  Rewrite memory handling here someday
+ * and remove it.
+ *
  * This routine is a crock, and so is everyplace that calls it.  The problem
  * is that the cached form of plphp functions/queries is allocated permanently
  * (mostly via malloc()) and never released until backend exit.  Subsidiary
@@ -226,57 +232,68 @@ perm_fmgr_info(Oid functionId, FmgrInfo *finfo)
 	fmgr_info_cxt(functionId, finfo, TopMemoryContext);
 }
 
-/* need for plphp module work */
-static void
-sapi_plphp_send_header(sapi_header_struct* sapi_header,
-					   void *server_context TSRMLS_DC)		
-{
-
-}
-
-static inline size_t
-sapi_cli_single_write(const char *str, uint str_length)
-{
-	long		ret;
-
-	ret = write(STDOUT_FILENO, str, str_length);
-	if (ret <= 0)
-		return 0;
-
-	return ret;
-}
-
+/*
+ * sapi_plphp_write
+ * 		Called when PHP wants to write something to stdout.
+ *
+ * We just save the output in a StringInfo until the next Flush call.
+ */
 static int
-sapi_plphp_ub_write(const char *str, uint str_length TSRMLS_DC)
+sapi_plphp_write(const char *str, uint str_length TSRMLS_DC)
 {
-	const char *ptr = str;
-	uint		remaining = str_length;
-	size_t		ret;
+	if (currmsg == NULL)
+		currmsg = makeStringInfo();
 
-	while (remaining > 0)
-	{
-		ret = sapi_cli_single_write(ptr, remaining);
-		if (!ret)
-			php_handle_aborted_connection();
-
-		ptr += ret;
-		remaining -= ret;
-	}
+	appendStringInfoString(currmsg, str);
 
 	return str_length;
 }
 
-/* php_module startup */
-static int
-php_plphp_startup(sapi_module_struct *sapi_module)
+/*
+ * sapi_plphp_flush
+ * 		Called when PHP wants to flush stdout.
+ *
+ * The stupid PHP implementation calls write and follows with a Flush right
+ * away -- a good implementation would write several times and flush when the
+ * message is complete.  To make the output look reasonable in Postgres, we
+ * skip the flushing if the accumulated message does not end in a newline.
+ */
+static void
+sapi_plphp_flush(void *sth)
 {
-	return php_module_startup(sapi_module, NULL, 0);
+	if (currmsg != NULL)
+	{
+		if (currmsg->data[currmsg->len - 1] == '\n')
+		{
+			Assert(currmsg->data != NULL);
+
+			/*
+			 * remove the trailing newline because elog() inserts another
+			 * one
+			 */
+			currmsg->data[currmsg->len - 1] = '\0';
+			elog(LOG, "%s", currmsg->data);
+
+			pfree(currmsg->data);
+			pfree(currmsg);
+			currmsg = NULL;
+		}
+	}
+	else
+		elog(LOG, "attempting to flush a NULL message");
+}
+
+static int
+sapi_plphp_send_headers(TSRMLS_CC)
+{
+	elog(LOG, "sapi_plphp_send_headers called");
+	return 1;
 }
 
 static void
 php_plphp_log_messages(char *message)
 {
-	elog(LOG, "plphp: %s", message);
+	elog(LOG, "(log message called) plphp: %s", message);
 }
 
 /* FIXME -- this is a misnomer now. */
@@ -287,46 +304,32 @@ zend_function_entry spi_functions[] = {
 	{NULL, NULL, NULL}
 };
 
-/* FIXME -- this thing is unused ... */
-zend_module_entry spi_module_entry = {
-	STANDARD_MODULE_HEADER,
-	"SPI module",
-	spi_functions,
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	NO_VERSION_YET,
-	STANDARD_MODULE_PROPERTIES
-};
-
 static sapi_module_struct plphp_sapi_module = {
 	"plphp",					/* name */
 	"PL/php PostgreSQL Handler",/* pretty name */
 
-	php_plphp_startup,			/* startup */
+	NULL,						/* startup */
 	php_module_shutdown_wrapper,/* shutdown */
 
 	NULL,						/* activate */
 	NULL,						/* deactivate */
 
-	sapi_plphp_ub_write,		/* unbuffered write */
-	NULL,						/* flush */
-	NULL,						/* get uid */
+	sapi_plphp_write,			/* unbuffered write */
+	sapi_plphp_flush,			/* flush */
+	NULL,						/* stat */
 	NULL,						/* getenv */
 
-	php_error,					/* error handler */
+	php_error,					/* sapi_error(int, const char *, ...) */
 
 	NULL,						/* header handler */
-	NULL,
-	sapi_plphp_send_header,		/* send header handler */
+	sapi_plphp_send_headers,	/* send headers */
+	NULL,						/* send header */
 
-	NULL,						/* read POST data */
-	NULL,						/* read Cookies */
+	NULL,						/* read POST */
+	NULL,						/* read cookies */
 
 	NULL,						/* register server variables */
-	php_plphp_log_messages,		/* Log message */
+	php_plphp_log_messages,		/* log message */
 
 	NULL,						/* Block interrupts */
 	NULL,						/* Unblock interrupts */
@@ -369,7 +372,7 @@ plphp_init(void)
 	sapi_startup(&plphp_sapi_module);
 
 	if (php_module_startup(&plphp_sapi_module, NULL, 0) == FAILURE)
-		elog(ERROR, "Could not startup plphp module");	
+		elog(ERROR, "php_module_startup call failed");
 
 	/*
 	 * FIXME -- Figure out what this comment is supposed to mean:
@@ -419,13 +422,18 @@ plphp_init(void)
 			SG(headers_sent) = 1;
 			SG(request_info).no_headers = 1;
 			/* Use Postgres log */
-			elog(WARNING, "plphp: could not start up plphp request");
+			elog(WARNING, "php_request_startup call failed");
 		}
 
 		CG(interactive) = true;
 		PG(during_request_startup) = true;
 		plphp_first_call = false;
 
+		/*
+		 * XXX This is a hack -- we are replacing the error callback in an
+		 * invasive manner that should not be expected to work on future PHP
+		 * releases.
+		 */
 		zend_error_cb = plphp_error_cb;
 	}
 	zend_catch
@@ -456,11 +464,10 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_CONNECTION_FAILURE),
 				 errmsg("could not connect to SPI manager")));
 
+	/* Redirect to the appropiate handler */
 	if (CALLED_AS_TRIGGER(fcinfo))
-		/* called as a trigger procedure */
 		retval = plphp_trigger_handler(fcinfo);
 	else
-		/* Called as a function */
 		retval = plphp_func_handler(fcinfo);
 
 	return retval;
@@ -509,6 +516,8 @@ plphp_validator(PG_FUNCTION_ARGS)
 
 	/* Get the function name, for the error message */
 	StrNCpy(funcname, NameStr(procForm->proname), NAMEDATALEN);
+
+	/* Let go of the pg_proc tuple */
 	ReleaseSysCache(procTup);
 
 	/* Create a PHP function creation statement */
@@ -525,7 +534,10 @@ plphp_validator(PG_FUNCTION_ARGS)
 	 */
 	zend_hash_del(CG(function_table), tmpname, strlen(tmpname) + 1);
 
-	/* Let the user see the fireworks */
+	/*
+	 * Let the user see the fireworks.  If the function doesn't validate,
+	 * the ERROR will be raised and the function will not be created.
+	 */
 	if (zend_eval_string(tmpsrc, NULL,
 						 "plphp function temp source" TSRMLS_CC) == FAILURE)
 		plphp_elog(ERROR, "function \"%s\" does not validate", funcname);
@@ -545,120 +557,129 @@ plphp_validator(PG_FUNCTION_ARGS)
  * 		Returns a TupleDesc of the function's return type.
  */
 static TupleDesc
-plphp_get_function_tupdesc(Oid result_type, ReturnSetInfo *rsinfo)
+plphp_get_function_tupdesc(Oid result_type, Node *rsinfo)
 {
 	if (result_type == RECORDOID)
 	{
+		ReturnSetInfo *rs = (ReturnSetInfo *) rsinfo;
 		/* We must get the information from call context */
-		if (!rsinfo || !IsA(rsinfo, ReturnSetInfo) ||
-			rsinfo->expectedDesc == NULL)
+		if (!rsinfo || !IsA(rsinfo, ReturnSetInfo) || rs->expectedDesc == NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("function returning record called in context "
 							"that cannot accept type record")));
-		return rsinfo->expectedDesc;
+		return rs->expectedDesc;
 	}
 	else
 		/* ordinary composite type */
 		return lookup_rowtype_tupdesc(result_type, -1);
 }
 
+/*
+ * plphp_modify_tuple
+ *
+ * 		Return the modified NEW tuple, for use as return value in a BEFORE
+ * 		trigger.
+ */
 static HeapTuple
-plphp_modify_tuple(zval *pltd, TriggerData *tdata)
+plphp_modify_tuple(zval *outdata, TriggerData *tdata)
 {
-	zval	   *plntup;
-	char	  **plkeys;
-	char	   *platt;
-	char	   *plval;
-	HeapTuple	rtup;
-	int			natts,
-				i;
-	int		   *volatile modattrs;
-	Datum	   *volatile modvalues;
-	char	   *volatile modnulls;
 	TupleDesc	tupdesc;
-	HeapTuple	typetup;
+	HeapTuple	rettuple;
+	zval	   *newtup;
+	char	  **vals;
+	int			i;
+	AttInMetadata *attinmeta;
+	MemoryContext tmpcxt,
+				  oldcxt;
 
+	tmpcxt = AllocSetContextCreate(TopTransactionContext,
+								   "PL/php NEW context",
+								   ALLOCSET_DEFAULT_MINSIZE,
+								   ALLOCSET_DEFAULT_INITSIZE,
+								   ALLOCSET_DEFAULT_MAXSIZE);
+
+	oldcxt = MemoryContextSwitchTo(tmpcxt);
+
+	/*
+	 * FIXME -- why not do this thing here instead of calling
+	 * some other function?
+	 */
+	newtup = plphp_get_new(outdata);
+
+	/* Fetch the tupledesc and metadata */
 	tupdesc = tdata->tg_relation->rd_att;
+	attinmeta = TupleDescGetAttInMetadata(tupdesc);
 
-	modattrs = NULL;
-	modvalues = NULL;
-	modnulls = NULL;
-	tupdesc = tdata->tg_relation->rd_att;
+	if (tupdesc->natts > plphp_attr_count(newtup))
+		ereport(ERROR,
+				(errmsg("incorrect number of keys in $_TD['new']"),
+				 errdetail("at least %d expected, %d found",
+						   tupdesc->natts, plphp_attr_count(newtup))));
 
-	plntup = plphp_get_new(pltd);
+	vals = (char **) palloc(tupdesc->natts * sizeof(char *));
 
-	if (Z_TYPE_P(plntup) != IS_ARRAY)
-		elog(ERROR, "plphp: $_TD['new'] is not an array");
-
-	plkeys = plphp_get_attr_names(plntup);
-	natts = plphp_attr_count(plntup);
-
-	if (natts != tupdesc->natts)
-		elog(ERROR, "plphp: $_TD['new'] has an incorrect number of keys");
-
-	modattrs = palloc0(natts * sizeof(int));
-	modvalues = palloc0(natts * sizeof(Datum));
-	modnulls = palloc0(natts * sizeof(char));
-
-	for (i = 0; i < natts; i++)
+	/*
+	 * For each attribute in the tupledesc, get its value from newtup and put
+	 * it in an array of cstrings.
+	 */
+	for (i = 0; i < tupdesc->natts; i++)
 	{
-		FmgrInfo	finfo;
-		Oid			typinput;
-		Oid			typelem;
-		int			atti,
-					attn;
+		zval  **element;
+		char   *attname = NameStr(tupdesc->attrs[i]->attname);
+		char   *val;
 
-		platt = plkeys[i];
-		attn = modattrs[i] = SPI_fnumber(tupdesc, platt);
+		/* Fetch the attribute value from the zval */
+		if (zend_hash_find(newtup->value.ht, attname, strlen(attname) + 1,
+						   (void **) &element) != SUCCESS)
+			elog(ERROR, "$_TD['new'] does not contain attribute \"%s\"",
+				 attname);
 
-		if (attn == SPI_ERROR_NOATTRIBUTE)
-			elog(ERROR, "plphp: invalid attribute \"%s\" in tuple", platt);
-		atti = attn - 1;
-
-		plval = plphp_get_elem(plntup, platt);
-
-		if (plval == NULL)
-			elog(FATAL, "plphp: interpreter is probably corrupted");
-
-		typetup =
-			SearchSysCache(TYPEOID,
-						   ObjectIdGetDatum(tupdesc->attrs[atti]->atttypid),
-						   0, 0, 0);
-		typinput = ((Form_pg_type) GETSTRUCT(typetup))->typinput;
-		typelem = ((Form_pg_type) GETSTRUCT(typetup))->typelem;
-		ReleaseSysCache(typetup);
-		fmgr_info(typinput, &finfo);
-
-		if (plval)
+		/* nulls are easy */
+		if (Z_TYPE_P(element[0]) == IS_NULL)
 		{
-			modvalues[i] = FunctionCall3(&finfo,
-										 CStringGetDatum(plval),
-										 ObjectIdGetDatum(typelem),
-										 Int32GetDatum(tupdesc->attrs[atti]->
-													   atttypmod));
-			modnulls[i] = ' ';
+			vals[i] = NULL;
+			continue;
 		}
-		else
+
+		/* XXX This code appears more than once.  Refactor it. */
+		switch (Z_TYPE_P(element[0]))
 		{
-			modvalues[i] = (Datum) 0;
-			modnulls[i] = 'n';
+			case IS_STRING:
+				val = palloc(strlen(element[0]->value.str.val) + 1);
+				strcpy(val, element[0]->value.str.val);
+				break;
+			case IS_LONG:
+				val = palloc(15);
+				sprintf(val, "%ld", element[0]->value.lval);
+				break;
+			case IS_DOUBLE:
+				val = palloc(15);
+				sprintf(val, "%6e", element[0]->value.dval);
+				break;
+			case IS_ARRAY:
+				val = plphp_convert_to_pg_array(element[0]);
+				break;
+			default:
+				/* keep compiler quiet */
+				val = NULL;
+				elog(ERROR, "$_TD['new']['%s'] is not a valid value", attname);
+				break;
 		}
+
+		vals[i] = val;
 	}
 
-	rtup =
-		SPI_modifytuple(tdata->tg_relation, tdata->tg_trigtuple, natts,
-						modattrs, modvalues, modnulls);
+	/* Return to the original context so that the new tuple will survive */
+	MemoryContextSwitchTo(oldcxt);
 
-	pfree(modattrs);
-	pfree(modvalues);
-	pfree(modnulls);
+	/* Build the tuple */
+	rettuple = BuildTupleFromCStrings(attinmeta, vals);
 
-	if (rtup == NULL)
-		elog(ERROR, "plphp: SPI_modifytuple failed: %s",
-			 SPI_result_code_string(SPI_result));
+	/* Free the memory used */
+	MemoryContextDelete(tmpcxt);
 
-	return rtup;
+	return rettuple;
 }
 
 /*
@@ -680,11 +701,10 @@ plphp_trig_build_args(FunctionCallInfo fcinfo)
 
 	/* The basic variables */
 	add_assoc_string(retval, "name", tdata->tg_trigger->tgname, 1);
-	add_assoc_string(retval, "relid",
-					 DatumGetCString(DirectFunctionCall1
-									 (oidout,
-									  ObjectIdGetDatum(tdata->tg_relation->rd_id))),
-					 1);
+    add_assoc_string(retval, "relid",
+                     DatumGetCString(DirectFunctionCall1(oidout,
+                                                         ObjectIdGetDatum(tdata->tg_relation->rd_id))),
+                     1);
 	add_assoc_string(retval, "relname", SPI_getrelname(tdata->tg_relation), 1);
 
 	/* EVENT */
@@ -940,17 +960,13 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 					TupleDesc	td;
 					int			i;
 					char	  **values;
-					char	   *key,
-							   *val;
+					char	   *key;
 					AttInMetadata *attinmeta;
 					HeapTuple	tup;
 
 					if (desc->ret_type & PL_PSEUDO)
-					{
 						td = plphp_get_function_tupdesc(desc->ret_oid,
-									  					(ReturnSetInfo *)
 														fcinfo->resultinfo);
-					}
 					else
 						td = lookup_rowtype_tupdesc(desc->ret_oid, (int32) - 1);
 
@@ -962,16 +978,12 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 					for (i = 0; i < td->natts; i++)
 					{
 						key = SPI_fname(td, i + 1);
-						val = plphp_get_elem(phpret, key);
-						if (val)
-							values[i] = val;
-						else
-							values[i] = NULL;
+						/* may be NULL but we don't care */
+						values[i] = plphp_get_elem(phpret, key);
 					}
 					attinmeta = TupleDescGetAttInMetadata(td);
 					tup = BuildTupleFromCStrings(attinmeta, values);
 					retval = HeapTupleGetDatum(tup);
-
 				}
 				else
 					/* FIXME -- should return the thing as a string? */
@@ -1027,7 +1039,7 @@ ZEND_FUNCTION(spi_exec_query)
 			return;
 		}
 	}
-	else
+	else if (ZEND_NUM_ARGS() == 1)
 	{
 		if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
 								  &query, &query_len) == FAILURE)
@@ -1037,6 +1049,12 @@ ZEND_FUNCTION(spi_exec_query)
 			return;
 		}
 		limit = 0;
+	}
+	else
+	{
+		zend_error(E_WARNING, "Incorrect number of parameters to %s",
+				   get_active_function_name(TSRMLS_C));
+		return;
 	}
 
 	status = SPI_exec(query, limit);
@@ -1049,9 +1067,8 @@ ZEND_FUNCTION(spi_exec_query)
 	if (status == SPI_OK_SELECT)
 	{
 		add_assoc_long(rv, "fetch_counter", 0);
-		/*
-		 * Save pointer to the SPI_tuptable
-		 */
+
+		/* Save pointer to the SPI_tuptable */
 		pointer = (char *) palloc(sizeof(SPITupleTable *));
 		sprintf(pointer, "%p", (void *) SPI_tuptable);
 		add_assoc_string(rv, "res", (char *) pointer, 1);
@@ -1374,6 +1391,8 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 		if (zend_eval_string(complete_proc_source, NULL,
 							 "plphp function source" TSRMLS_CC) == FAILURE)
 		{
+			/* the next compilation will blow it up */
+			prodesc->fn_xmin = InvalidTransactionId;
 			plphp_elog(ERROR, "unable to compile function \"%s\"",
 					   prodesc->proname);
 		}
@@ -1523,7 +1542,11 @@ plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 	{
 		if (zend_eval_string(call, retval, "plphp function call"
 							 TSRMLS_CC) == FAILURE)
+		{
+			/* The next compilation will blow it up */
+			desc->fn_xmin = InvalidTransactionId;
 			plphp_elog(ERROR, "plphp: function call - failure");
+		}
 
 	}
 	zend_catch
@@ -1559,7 +1582,11 @@ plphp_call_php_trig(plphp_proc_desc *desc, FunctionCallInfo fcinfo,
 	{
 		if (zend_eval_string(call, retval, "plphp trigger call"
 							 TSRMLS_CC) == FAILURE)
+		{
+			/* The next compilation will blow it up */
+			desc->fn_xmin = InvalidTransactionId;
 			plphp_elog(ERROR, "plphp: trigger call - failure");
+		}
 	}
 	zend_catch
 	{
@@ -1687,7 +1714,7 @@ ZEND_FUNCTION(pg_raise)
  * continue executing in the hope that the system doesn't crash later.
  *
  * Note that we do clean up some PHP state by hand but it doesn't seem to
- * work as expected.
+ * work as expected either.
  */
 void
 plphp_error_cb(int type, const char *filename, const uint lineno,
@@ -1729,6 +1756,7 @@ plphp_error_cb(int type, const char *filename, const uint lineno,
 		CG(in_compilation) = EG(in_execution) = 0;
 		EG(current_execute_data) = NULL;
 
+        /* downgrade the error level */
 		elevel = WARNING;
 	}
 

@@ -45,7 +45,7 @@ update trigfunc_table set a = 2 where a = 1;
 delete from trigfunc_table where a = 2;
 
 -- Test SKIP and MODIFY
-CREATE or replace FUNCTION trigfunc_ins() RETURNS trigger LANGUAGE plphp AS $$
+CREATE FUNCTION trigfunc_ins() RETURNS trigger LANGUAGE plphp AS $$
 	$a = $_TD['new']['a'];
 	if ($a == 1) {
 		return 'SKIP';
@@ -73,4 +73,75 @@ insert into b values (5);
 insert into b values (6);
 select * from b;
 
-	
+-- Add an additional attribute to NEW
+CREATE FUNCTION trigfunc_test1() RETURNS trigger LANGUAGE plphp AS $$
+	$_TD['new']['a'] = 'foo';
+	return 'MODIFY';
+$$;
+CREATE TABLE trigfunc_test1 (b int);
+CREATE TRIGGER trig_test1 BEFORE INSERT ON trigfunc_test1
+FOR EACH ROW EXECUTE PROCEDURE trigfunc_test1();
+-- NEW has an incorrect number of keys
+INSERT INTO trigfunc_test1 VALUES (1);
+
+-- Create NEW as a new array, with a single attribute that's not the expected
+-- one
+CREATE OR REPLACE FUNCTION trigfunc_test1() RETURNS trigger LANGUAGE plphp AS $$
+	$_TD['new'] = array('a' => 'foo');
+	return 'MODIFY';
+$$;
+-- Invalid attribute "a" in NEW
+INSERT INTO trigfunc_test1 VALUES (1);
+
+-- Create NEW as the correct array, but with a NULL value
+CREATE OR REPLACE FUNCTION trigfunc_test1() RETURNS trigger LANGUAGE plphp AS $$
+	$_TD['new'] = array('b' => NULL);
+	return 'MODIFY';
+$$;
+INSERT INTO trigfunc_test1 VALUES (1);
+-- should have inserted a NULL
+SELECT b IS NULL FROM trigfunc_test1;
+DELETE FROM trigfunc_test1;
+
+-- Return an empty array
+CREATE OR REPLACE FUNCTION trigfunc_test1() RETURNS trigger LANGUAGE plphp AS $$
+	$_TD['new'] = array();
+	return 'MODIFY';
+$$;
+INSERT INTO trigfunc_test1 VALUES (1);
+
+-- Make "b" a literal of an incorrect type
+CREATE OR REPLACE FUNCTION trigfunc_test1() RETURNS trigger LANGUAGE plphp AS $$
+	$_TD['new'] = array('b' => 'foobar');
+	return 'MODIFY';
+$$;
+INSERT INTO trigfunc_test1 VALUES (1);
+
+-- Make "b" an array
+CREATE OR REPLACE FUNCTION trigfunc_test1() RETURNS trigger LANGUAGE plphp AS $$
+	$_TD['new'] = array('b' => array(1, 2, 3));
+	return 'MODIFY';
+$$;
+INSERT INTO trigfunc_test1 VALUES (1);
+
+-- What happens if we create a table whose columns are numbers?
+-- Does PHP regular array handling work?
+CREATE TABLE numbers ("0" int, "1" text, "2" float, "3" numeric[]);
+CREATE OR REPLACE FUNCTION numbers_trig() RETURNS TRIGGER LANGUAGE plphp AS $$
+	$_TD['new'] = array(5, 'hello', 1.4142,
+		array(-123, 14 * 3, 142857 * 2));
+	RETURN 'MODIFY';
+$$;
+CREATE TRIGGER numbers_trig BEFORE INSERT ON numbers
+FOR EACH ROW EXECUTE PROCEDURE numbers_trig();
+INSERT INTO numbers DEFAULT VALUES;
+SELECT * FROM numbers;
+
+-- Now use strings with the names of the columns
+CREATE OR REPLACE FUNCTION numbers_trig() RETURNS TRIGGER LANGUAGE plphp AS $$
+	$_TD['new'] = array("0" => 42, "1" => 'hello new jersey', "2" => 3.14,
+		"3" => array(array(1,7),array(2,3),array(4,8),array(5,6)));
+	RETURN 'MODIFY';
+$$;
+INSERT INTO numbers DEFAULT VALUES;
+SELECT * FROM numbers;
