@@ -23,15 +23,11 @@
 /* PHP stuff */
 #include "php.h"
 
-zval *plphp_hash_from_tuple(HeapTuple tuple, TupleDesc tupdesc);
+zval *plphp_zval_from_tuple(HeapTuple tuple, TupleDesc tupdesc);
+HeapTuple plphp_htup_from_zval(zval *val, TupleDesc tupdesc);
 char *plphp_convert_to_pg_array(zval *array);
 zval *plphp_convert_from_pg_array(char *input);
-zval *plphp_get_row(zval * array, int index);
-char *plphp_get_elem(zval * array, char *key);
-int plphp_attr_count(zval *array);
-int plphp_attr_count_r(zval *array);
-char **plphp_get_attr_names(zval *array);
-zval *plphp_get_new(zval *array);
-zval *plphp_get_pelem(zval *array, char *key);
+zval *plphp_array_get_elem(zval* array, char *key);
+char *plphp_zval_get_cstring(zval *val, bool do_array, bool null_ok);
 
 #endif /* PLPHP_IO_H */

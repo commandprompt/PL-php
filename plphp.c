@@ -584,9 +584,9 @@ plphp_get_function_tupdesc(Oid result_type, Node *rsinfo)
 
 /*
  * plphp_modify_tuple
- *
  * 		Return the modified NEW tuple, for use as return value in a BEFORE
- * 		trigger.
+ * 		trigger.  outdata must point to the $_TD variable from the PHP
+ * 		function.
  */
 static HeapTuple
 plphp_modify_tuple(zval *outdata, TriggerData *tdata)
@@ -918,7 +918,7 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("function declared to return array must return an array")));
 
-	/* FIXME -- do we need to do the same for tuples? */
+	/* XXX -- do we need to do the same for tuples? */
 
 	/*
 	 * Disconnect from SPI manager and then create the return values datum (if
@@ -949,59 +949,41 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 	{
 		switch (phpret->type)
 		{
-			/* XXX rewrite this stuff using StringInfo */
+			case IS_NULL:
+				fcinfo->isnull = true;
+				break;
 			case IS_LONG:
-				retvalbuffer = (char *) palloc(256);
-				snprintf(retvalbuffer, 256, "%ld", phpret->value.lval);
-				break;
 			case IS_DOUBLE:
-				retvalbuffer = (char *) palloc(256);
-				snprintf(retvalbuffer, 256, "%e", phpret->value.dval);
-				break;
 			case IS_STRING:
-				retvalbuffer = (char *) palloc(phpret->value.str.len + 1);
-				snprintf(retvalbuffer, phpret->value.str.len + 1, "%s",
-						 phpret->value.str.val);
+				retvalbuffer = plphp_zval_get_cstring(phpret, false, false);
+				retval = CStringGetDatum(retvalbuffer);
 				break;
 			case IS_ARRAY:
 				if (desc->ret_type & PL_ARRAY)
+				{
 					retvalbuffer = plphp_convert_to_pg_array(phpret);
+					retval = CStringGetDatum(retvalbuffer);
+				}
 				else if (desc->ret_type & PL_TUPLE)
 				{
 					TupleDesc	td;
-					int			i;
-					char	  **values;
-					char	   *key;
-					AttInMetadata *attinmeta;
 					HeapTuple	tup;
 
 					if (desc->ret_type & PL_PSEUDO)
 						td = plphp_get_function_tupdesc(desc->ret_oid,
 														fcinfo->resultinfo);
 					else
-						td = lookup_rowtype_tupdesc(desc->ret_oid, (int32) - 1);
+						td = lookup_rowtype_tupdesc(desc->ret_oid, (int32) -1);
 
 					if (!td)
 						elog(ERROR, "no TupleDesc info available");
 
-					values = (char **) palloc(td->natts * sizeof(char *));
-
-					for (i = 0; i < td->natts; i++)
-					{
-						key = SPI_fname(td, i + 1);
-						/* may be NULL but we don't care */
-						values[i] = plphp_get_elem(phpret, key);
-					}
-					attinmeta = TupleDescGetAttInMetadata(td);
-					tup = BuildTupleFromCStrings(attinmeta, values);
+					tup = plphp_htup_from_zval(phpret, td);
 					retval = HeapTupleGetDatum(tup);
 				}
 				else
 					/* FIXME -- should return the thing as a string? */
 					elog(ERROR, "this plphp function cannot return arrays");
-				break;
-			case IS_NULL:
-				fcinfo->isnull = true;
 				break;
 			default:
 				elog(WARNING,
@@ -1080,9 +1062,11 @@ ZEND_FUNCTION(spi_exec_query)
 		add_assoc_long(rv, "fetch_counter", 0);
 
 		/* Save pointer to the SPI_tuptable */
-		pointer = (char *) palloc(17);
+		pointer = (char *) palloc(32);
 		sprintf(pointer, "%p", (void *) SPI_tuptable);
-		add_assoc_string(rv, "res", (char *) pointer, 1);
+		add_assoc_string(rv, "res", (char *) pointer, true);
+
+		pfree(pointer);
 	}
 
 	*return_value = *rv;
@@ -1112,23 +1096,27 @@ ZEND_FUNCTION(spi_fetch_row)
 		return;
 	}
 
-	pointer = plphp_get_elem(param, "res");
+	pointer = plphp_zval_get_cstring(plphp_array_get_elem(param, "res"),
+									 false, false);
 	sscanf(pointer, "%p", &tup_table);
+	pfree(pointer);
 
-	tmp = plphp_get_pelem(param, "processed");
+	tmp = plphp_array_get_elem(param, "processed");
 	processed = tmp->value.lval;
 
-	tmp = plphp_get_pelem(param, "fetch_counter");
+	tmp = plphp_array_get_elem(param, "fetch_counter");
 	counter = tmp->value.lval;
 
 	if (counter < processed)
 	{
-		row = plphp_hash_from_tuple(tup_table->vals[counter],
+		row = plphp_zval_from_tuple(tup_table->vals[counter],
 			  						tup_table->tupdesc);
 		tmp->value.lval++;
 
 		*return_value = *row;
+
 		zval_copy_ctor(return_value);
+		zval_dtor(row);
 	}
 	else
 		RETURN_FALSE;
@@ -1173,7 +1161,9 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 	/*
 	 * Look up the internal proc name in the hashtable
 	 */
-	pointer = plphp_get_elem(plphp_proc_array, internal_proname);
+	pointer = plphp_zval_get_cstring(plphp_array_get_elem(plphp_proc_array,
+														  internal_proname),
+									 false, true);
 	if (pointer)
 	{
 		sscanf(pointer, "%p", &prodesc);
