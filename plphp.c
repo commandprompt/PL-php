@@ -203,7 +203,6 @@ static zval *plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc);
 static zval *plphp_call_php_func(plphp_proc_desc *, FunctionCallInfo);
 static zval *plphp_call_php_trig(plphp_proc_desc *, FunctionCallInfo, zval *);
 
-static void plphp_elog(int elevel, char *fmt, ...);
 static void plphp_error_cb(int type, const char *filename, const uint lineno,
 								  const char *fmt, va_list args);
 
@@ -455,20 +454,28 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 {
 	Datum		retval;
 
-	/* Initialize interpreter */
-	plphp_init_all();
+	PG_TRY();
+	{
+		/* Initialize interpreter */
+		plphp_init_all();
 
-	/* Connect to SPI manager */
-	if (SPI_connect() != SPI_OK_CONNECT)
-		ereport(ERROR,
-				(errcode(ERRCODE_CONNECTION_FAILURE),
-				 errmsg("could not connect to SPI manager")));
+		/* Connect to SPI manager */
+		if (SPI_connect() != SPI_OK_CONNECT)
+			ereport(ERROR,
+					(errcode(ERRCODE_CONNECTION_FAILURE),
+					 errmsg("could not connect to SPI manager")));
 
-	/* Redirect to the appropiate handler */
-	if (CALLED_AS_TRIGGER(fcinfo))
-		retval = plphp_trigger_handler(fcinfo);
-	else
-		retval = plphp_func_handler(fcinfo);
+		/* Redirect to the appropiate handler */
+		if (CALLED_AS_TRIGGER(fcinfo))
+			retval = plphp_trigger_handler(fcinfo);
+		else
+			retval = plphp_func_handler(fcinfo);
+	}
+	PG_CATCH();
+	{
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 
 	return retval;
 }
@@ -510,7 +517,7 @@ plphp_validator(PG_FUNCTION_ARGS)
 								  Anum_pg_proc_prosrc,
 								  &isnull);
 	if (isnull)
-		plphp_elog(ERROR, "cache lookup yielded NULL prosrc");
+		elog(ERROR, "cache lookup yielded NULL prosrc");
 	prosrc = DatumGetCString(DirectFunctionCall1(textout,
 												 prosrcdatum));
 
@@ -540,7 +547,7 @@ plphp_validator(PG_FUNCTION_ARGS)
 	 */
 	if (zend_eval_string(tmpsrc, NULL,
 						 "plphp function temp source" TSRMLS_CC) == FAILURE)
-		plphp_elog(ERROR, "function \"%s\" does not validate", funcname);
+		elog(ERROR, "function \"%s\" does not validate", funcname);
 
 	pfree(tmpsrc);
 
@@ -863,7 +870,7 @@ plphp_trigger_handler(FunctionCallInfo fcinfo)
 						elog(ERROR, "unknown event in trigger function");
 				}
 				else
-					plphp_elog(ERROR,
+					elog(ERROR,
 							   "expected trigger function to return NULL, "
 							   "'SKIP' or 'MODIFY'");
 				break;
@@ -876,7 +883,7 @@ plphp_trigger_handler(FunctionCallInfo fcinfo)
 					retval = (Datum) trigdata->tg_trigtuple;
 				break;
 			default:
-				plphp_elog(ERROR,
+				elog(ERROR,
 						   "expected trigger function to return NULL, "
 						   "'SKIP' or 'MODIFY'");
 				break;
@@ -975,7 +982,7 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 						td = lookup_rowtype_tupdesc(desc->ret_oid, (int32) - 1);
 
 					if (!td)
-						plphp_elog(ERROR, "no TupleDesc info available");
+						elog(ERROR, "no TupleDesc info available");
 
 					values = (char **) palloc(td->natts * sizeof(char *));
 
@@ -1073,7 +1080,7 @@ ZEND_FUNCTION(spi_exec_query)
 		add_assoc_long(rv, "fetch_counter", 0);
 
 		/* Save pointer to the SPI_tuptable */
-		pointer = (char *) palloc(sizeof(SPITupleTable *));
+		pointer = (char *) palloc(17);
 		sprintf(pointer, "%p", (void *) SPI_tuptable);
 		add_assoc_string(rv, "res", (char *) pointer, 1);
 	}
@@ -1205,12 +1212,12 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 		 */
 		prodesc = (plphp_proc_desc *) malloc(sizeof(plphp_proc_desc));
 		if (!prodesc)
-			plphp_elog(ERROR, "out of memory");
+			elog(ERROR, "out of memory");
 
 		MemSet(prodesc, 0, sizeof(plphp_proc_desc));
 		prodesc->proname = strdup(internal_proname);
 		if (!prodesc->proname)
-			plphp_elog(ERROR, "out of memory");
+			elog(ERROR, "out of memory");
 
 		prodesc->fn_xmin = HeapTupleHeaderGetXmin(procTup->t_data);
 		prodesc->fn_cmin = HeapTupleHeaderGetCmin(procTup->t_data);
@@ -1225,7 +1232,7 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 		{
 			free(prodesc->proname);
 			free(prodesc);
-			plphp_elog(ERROR, "cache lookup failed for language %u",
+			elog(ERROR, "cache lookup failed for language %u",
 					   procStruct->prolang);
 		}
 		langStruct = (Form_pg_language) GETSTRUCT(langTup);
@@ -1329,7 +1336,7 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 				{
 					free(prodesc->proname);
 					free(prodesc);
-					plphp_elog(ERROR, "cache lookup failed for type %u",
+					elog(ERROR, "cache lookup failed for type %u",
 							   DatumGetObjectId(argid));
 				}
 
@@ -1365,7 +1372,7 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 		prosrcdatum = SysCacheGetAttr(PROCOID, procTup,
 									  Anum_pg_proc_prosrc, &isnull);
 		if (isnull)
-			plphp_elog(ERROR, "cache lookup yielded NULL prosrc");
+			elog(ERROR, "cache lookup yielded NULL prosrc");
 
 		proc_source = DatumGetCString(DirectFunctionCall1(textout,
 														  prosrcdatum));
@@ -1397,7 +1404,7 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 		{
 			/* the next compilation will blow it up */
 			prodesc->fn_xmin = InvalidTransactionId;
-			plphp_elog(ERROR, "unable to compile function \"%s\"",
+			elog(ERROR, "unable to compile function \"%s\"",
 					   prodesc->proname);
 		}
 
@@ -1549,13 +1556,13 @@ plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 		{
 			/* The next compilation will blow it up */
 			desc->fn_xmin = InvalidTransactionId;
-			plphp_elog(ERROR, "plphp: function call - failure");
+			elog(ERROR, "plphp: function call - failure");
 		}
 
 	}
 	zend_catch
 	{
-		plphp_elog(ERROR, "plphp: fatal error...");
+		elog(ERROR, "plphp: fatal error...");
 	}
 	zend_end_try();
 
@@ -1589,12 +1596,12 @@ plphp_call_php_trig(plphp_proc_desc *desc, FunctionCallInfo fcinfo,
 		{
 			/* The next compilation will blow it up */
 			desc->fn_xmin = InvalidTransactionId;
-			plphp_elog(ERROR, "plphp: trigger call - failure");
+			elog(ERROR, "plphp: trigger call - failure");
 		}
 	}
 	zend_catch
 	{
-		plphp_elog(ERROR, "plphp: fatal error...");
+		elog(ERROR, "plphp: fatal error...");
 	}
 	zend_end_try();
 
@@ -1729,7 +1736,18 @@ plphp_error_cb(int type, const char *filename, const uint lineno,
 
 	vsnprintf(str, 1024, fmt, args);
 
-	switch (type) {
+	/*
+	 * PHP error classification is a bitmask, so this conversion is a bit
+	 * bogus.  However, most calls to php_error() use a single bit.
+	 * Whenever more than one is used, we will default to ERROR, so this is
+	 * safe, if a bit excessive.
+	 *
+	 * XXX -- I wonder whether we should promote the WARNINGs to errors as
+	 * well.  PHP has a really stupid way of continuing execution in presence
+	 * of severe problems that I don't see why we should maintain.
+	 */
+	switch (type)
+	{
 		case E_ERROR:
 		case E_CORE_ERROR:
 		case E_COMPILE_ERROR:
@@ -1752,37 +1770,6 @@ plphp_error_cb(int type, const char *filename, const uint lineno,
 			break;
 	}
 
-	/* XXX Temporary kludge while we get error trapping to work */
-	if (elevel >= ERROR)
-	{
-		/* imitate _zend_bailout  */
-		CG(unclean_shutdown) = 1;
-		CG(in_compilation) = EG(in_execution) = 0;
-		EG(current_execute_data) = NULL;
-
-        /* downgrade the error level */
-		elevel = WARNING;
-	}
-
-	plphp_elog(elevel, str);
-}
-
-/*
- * Final step in error reporting.  This function is supposed to throw
- * the error message to Postgres logs and then clean up the PHP state.
- * I still have to figure out how to make that last part work --
- * zend_try/zend_catch do not seem to work properly.
- */
-void
-plphp_elog(int elevel, char *fmt, ...)
-{
-	va_list		ap;
-	char		msg[2048];
-
-	va_start(ap, fmt);
-	vsnprintf(msg, 2048, fmt, ap);
-	va_end(ap);
-
 	if (elevel >= ERROR)
 	{
 		/* imitate _zend_bailout  */
@@ -1792,7 +1779,7 @@ plphp_elog(int elevel, char *fmt, ...)
 	}
 
 	ereport(elevel,
-			(errmsg("plphp: %s", msg)));
+			(errmsg("plphp: %s", str)));
 }
 
 /*
