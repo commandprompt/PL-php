@@ -131,7 +131,7 @@ plphp_convert_to_pg_array(zval *array)
 					appendStringInfo(&str, "%li", element[0]->value.lval);
 					break;
 				case IS_DOUBLE:
-					appendStringInfo(&str, "%e", element[0]->value.dval);
+					appendStringInfo(&str, "%f", element[0]->value.dval);
 					break;
 				case IS_STRING:
 					appendStringInfo(&str, "\"%s\"", element[0]->value.str.val);
@@ -257,7 +257,7 @@ plphp_zval_get_cstring(zval *val, bool do_array, bool null_ok)
 			break;
 		case IS_DOUBLE:
 			ret = palloc(64);
-			snprintf(ret, 64, "%6e", val->value.dval);
+			snprintf(ret, 64, "%f", val->value.dval);
 			break;
 		case IS_STRING:
 			ret = palloc(val->value.str.len + 1);

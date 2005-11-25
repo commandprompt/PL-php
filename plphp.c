@@ -157,6 +157,8 @@ typedef enum pl_type
 
 /*
  * The information we cache about loaded procedures
+ *
+ * XXX -- maybe this thing needs to be rethought.
  */
 typedef struct plphp_proc_desc
 {
@@ -176,12 +178,27 @@ typedef struct plphp_proc_desc
 } plphp_proc_desc;
 
 /*
+ * Definition for PHP "resource" result type from SPI_execute.
+ */
+typedef struct
+{
+	SPITupleTable  *SPI_tuptable;
+	uint32			SPI_processed;
+	uint32			current_row;
+	int				status;
+} php_SPIresult;
+
+/*
  * Global data
  */
 static bool plphp_first_call = true;
 static zval *plphp_proc_array = NULL;
+
 /* for PHP write/flush */
 static StringInfo currmsg = NULL;
+
+/* resource type Id for SPIresult */
+static int SPIres_rtype;
 
 /*
  * Forward declarations
@@ -205,9 +222,13 @@ static zval *plphp_call_php_trig(plphp_proc_desc *, FunctionCallInfo, zval *);
 
 static void plphp_error_cb(int type, const char *filename, const uint lineno,
 								  const char *fmt, va_list args);
+void php_SPIresult_destroy(zend_rsrc_list_entry *rsrc TSRMLS_DC);
 
-ZEND_FUNCTION(spi_exec_query);
+ZEND_FUNCTION(spi_exec);
 ZEND_FUNCTION(spi_fetch_row);
+ZEND_FUNCTION(spi_processed);
+ZEND_FUNCTION(spi_status);
+ZEND_FUNCTION(spi_rewind);
 ZEND_FUNCTION(pg_raise);
 
 /*
@@ -297,8 +318,11 @@ php_plphp_log_messages(char *message)
 
 /* FIXME -- this is a misnomer now. */
 zend_function_entry spi_functions[] = {
-	ZEND_FE(spi_exec_query, NULL)
+	ZEND_FE(spi_exec, NULL)
 	ZEND_FE(spi_fetch_row, NULL)
+	ZEND_FE(spi_processed, NULL)
+	ZEND_FE(spi_status, NULL)
+	ZEND_FE(spi_rewind, NULL)
 	ZEND_FE(pg_raise, NULL)
 	{NULL, NULL, NULL}
 };
@@ -366,81 +390,102 @@ plphp_init(void)
 	if (!plphp_first_call)
 		return;
 
-	/* Omit HTML tags from output */
-	plphp_sapi_module.phpinfo_as_text = 1;
-	sapi_startup(&plphp_sapi_module);
-
-	if (php_module_startup(&plphp_sapi_module, NULL, 0) == FAILURE)
-		elog(ERROR, "php_module_startup call failed");
-
 	/*
-	 * FIXME -- Figure out what this comment is supposed to mean:
-	 *
-	 * There is no way to see if we must call zend_ini_deactivate()
-	 * since we cannot check if EG(ini_directives) has been initialised
-	 * because the executor's constructor does not initialize it.
-	 * Apart from that there seems no need for zend_ini_deactivate() yet.
-	 * So we error out.
+	 * Need a Pg try/catch block to prevent a initialization-
+	 * failure from bringing the whole server down.
 	 */
-
-	/* Init procedure cache */
-	MAKE_STD_ZVAL(plphp_proc_array);
-	array_init(plphp_proc_array);
-	plphp_first_call = false;
-
-	zend_register_functions(
-#if PHP_MAJOR_VERSION == 5
-							NULL,
-#endif
-							spi_functions, NULL,
-							MODULE_PERSISTENT TSRMLS_CC);
-
-	PG(during_request_startup) = true;
-
-	zend_try
+	PG_TRY();
 	{
-		/* Set some defaults */
-		SG(options) |= SAPI_OPTION_NO_CHDIR;
 
-		/* Hard coded defaults which cannot be overwritten in the ini file */
-		INI_HARDCODED("register_argc_argv", "0");
-		INI_HARDCODED("html_errors", "0");
-		INI_HARDCODED("implicit_flush", "1");
-		INI_HARDCODED("max_execution_time", "0");
+		/* Omit HTML tags from output */
+		plphp_sapi_module.phpinfo_as_text = 1;
+		sapi_startup(&plphp_sapi_module);
 
-		/* tell the engine we're in non-html mode */
-		zend_uv.html_errors = false;
-
-		/* not initialized but needed for several options */
-		CG(in_compilation) = false;
-
-		EG(uninitialized_zval_ptr) = NULL;
-
-		if (php_request_startup(TSRMLS_C) == FAILURE)
-		{
-			SG(headers_sent) = 1;
-			SG(request_info).no_headers = 1;
-			/* Use Postgres log */
-			elog(WARNING, "php_request_startup call failed");
-		}
-
-		CG(interactive) = true;
-		PG(during_request_startup) = true;
-		plphp_first_call = false;
+		if (php_module_startup(&plphp_sapi_module, NULL, 0) == FAILURE)
+			elog(ERROR, "php_module_startup call failed");
 
 		/*
-		 * XXX This is a hack -- we are replacing the error callback in an
-		 * invasive manner that should not be expected to work on future PHP
-		 * releases.
+		 * FIXME -- Figure out what this comment is supposed to mean:
+		 *
+		 * There is no way to see if we must call zend_ini_deactivate()
+		 * since we cannot check if EG(ini_directives) has been initialised
+		 * because the executor's constructor does not initialize it.
+		 * Apart from that there seems no need for zend_ini_deactivate() yet.
+		 * So we error out.
 		 */
-		zend_error_cb = plphp_error_cb;
-	}
-	zend_catch
-	{
+
+		/* Init procedure cache */
+		MAKE_STD_ZVAL(plphp_proc_array);
+		array_init(plphp_proc_array);
 		plphp_first_call = false;
-		elog(ERROR, "fatal error during PL/php initialization");
+
+		zend_register_functions(
+#if PHP_MAJOR_VERSION == 5
+								NULL,
+#endif
+								spi_functions, NULL,
+								MODULE_PERSISTENT TSRMLS_CC);
+
+		PG(during_request_startup) = true;
+
+		zend_try
+		{
+			/* Set some defaults */
+			SG(options) |= SAPI_OPTION_NO_CHDIR;
+
+			/* Hard coded defaults which cannot be overwritten in the ini file */
+			INI_HARDCODED("register_argc_argv", "0");
+			INI_HARDCODED("html_errors", "0");
+			INI_HARDCODED("implicit_flush", "1");
+			INI_HARDCODED("max_execution_time", "0");
+
+			/* tell the engine we're in non-html mode */
+			zend_uv.html_errors = false;
+
+			/* not initialized but needed for several options */
+			CG(in_compilation) = false;
+
+			EG(uninitialized_zval_ptr) = NULL;
+
+			if (php_request_startup(TSRMLS_C) == FAILURE)
+			{
+				SG(headers_sent) = 1;
+				SG(request_info).no_headers = 1;
+				/* Use Postgres log */
+				elog(ERROR, "php_request_startup call failed");
+			}
+
+			CG(interactive) = true;
+			PG(during_request_startup) = true;
+
+			/* Register the resource for SPI_result */
+			SPIres_rtype = zend_register_list_destructors_ex(php_SPIresult_destroy,
+															 NULL, 
+															 "SPI result",
+															 0);
+
+			/*
+			 * XXX This is a hack -- we are replacing the error callback in an
+			 * invasive manner that should not be expected to work on future PHP
+			 * releases.
+			 */
+			zend_error_cb = plphp_error_cb;
+
+			/* Ok, we're done */
+			plphp_first_call = false;
+		}
+		zend_catch
+		{
+			plphp_first_call = true;
+			elog(ERROR, "fatal error during PL/php initialization");
+		}
+		zend_end_try();
 	}
-	zend_end_try();
+	PG_CATCH();
+	{
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 }
 
 /*
@@ -454,11 +499,11 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 {
 	Datum		retval;
 
+	/* Initialize interpreter */
+	plphp_init_all();
+
 	PG_TRY();
 	{
-		/* Initialize interpreter */
-		plphp_init_all();
-
 		/* Connect to SPI manager */
 		if (SPI_connect() != SPI_OK_CONNECT)
 			ereport(ERROR,
@@ -502,60 +547,68 @@ plphp_validator(PG_FUNCTION_ARGS)
 	/* Initialize interpreter */
 	plphp_init_all();
 
-	/* Grab the pg_proc tuple */
-	procTup = SearchSysCache(PROCOID,
-							 ObjectIdGetDatum(funcoid),
-							 0, 0, 0);
-	if (!HeapTupleIsValid(procTup))
-		elog(ERROR, "cache lookup failed for function %u", funcoid);
+	PG_TRY();
+	{
+		/* Grab the pg_proc tuple */
+		procTup = SearchSysCache(PROCOID,
+								 ObjectIdGetDatum(funcoid),
+								 0, 0, 0);
+		if (!HeapTupleIsValid(procTup))
+			elog(ERROR, "cache lookup failed for function %u", funcoid);
 
-	procForm = (Form_pg_proc) GETSTRUCT(procTup);
+		procForm = (Form_pg_proc) GETSTRUCT(procTup);
 
-	/* Get the function source code */
-	prosrcdatum = SysCacheGetAttr(PROCOID,
-								  procTup,
-								  Anum_pg_proc_prosrc,
-								  &isnull);
-	if (isnull)
-		elog(ERROR, "cache lookup yielded NULL prosrc");
-	prosrc = DatumGetCString(DirectFunctionCall1(textout,
-												 prosrcdatum));
+		/* Get the function source code */
+		prosrcdatum = SysCacheGetAttr(PROCOID,
+									  procTup,
+									  Anum_pg_proc_prosrc,
+									  &isnull);
+		if (isnull)
+			elog(ERROR, "cache lookup yielded NULL prosrc");
+		prosrc = DatumGetCString(DirectFunctionCall1(textout,
+													 prosrcdatum));
 
-	/* Get the function name, for the error message */
-	StrNCpy(funcname, NameStr(procForm->proname), NAMEDATALEN);
+		/* Get the function name, for the error message */
+		StrNCpy(funcname, NameStr(procForm->proname), NAMEDATALEN);
 
-	/* Let go of the pg_proc tuple */
-	ReleaseSysCache(procTup);
+		/* Let go of the pg_proc tuple */
+		ReleaseSysCache(procTup);
 
-	/* Create a PHP function creation statement */
-	snprintf(tmpname, sizeof(tmpname), "plphp_temp_%u", funcoid);
-	tmpsrc = (char *) palloc(strlen(prosrc) +
-							 strlen(tmpname) +
-							 strlen("function  ($args, $argc){ } "));
-	sprintf(tmpsrc, "function %s($args, $argc){%s}",
-			tmpname, prosrc);
+		/* Create a PHP function creation statement */
+		snprintf(tmpname, sizeof(tmpname), "plphp_temp_%u", funcoid);
+		tmpsrc = (char *) palloc(strlen(prosrc) +
+								 strlen(tmpname) +
+								 strlen("function  ($args, $argc){ } "));
+		sprintf(tmpsrc, "function %s($args, $argc){%s}",
+				tmpname, prosrc);
 
-	/*
-	 * Delete the function from the PHP function table, just in case it
-	 * already existed.  This is quite unlikely, but still.
-	 */
-	zend_hash_del(CG(function_table), tmpname, strlen(tmpname) + 1);
+		/*
+		 * Delete the function from the PHP function table, just in case it
+		 * already existed.  This is quite unlikely, but still.
+		 */
+		zend_hash_del(CG(function_table), tmpname, strlen(tmpname) + 1);
 
-	/*
-	 * Let the user see the fireworks.  If the function doesn't validate,
-	 * the ERROR will be raised and the function will not be created.
-	 */
-	if (zend_eval_string(tmpsrc, NULL,
-						 "plphp function temp source" TSRMLS_CC) == FAILURE)
-		elog(ERROR, "function \"%s\" does not validate", funcname);
+		/*
+		 * Let the user see the fireworks.  If the function doesn't validate,
+		 * the ERROR will be raised and the function will not be created.
+		 */
+		if (zend_eval_string(tmpsrc, NULL,
+							 "plphp function temp source" TSRMLS_CC) == FAILURE)
+			elog(ERROR, "function \"%s\" does not validate", funcname);
 
-	pfree(tmpsrc);
+		pfree(tmpsrc);
 
-	/* Delete the newly-created function from the PHP function table. */
-	zend_hash_del(CG(function_table), tmpname, strlen(tmpname) + 1);
+		/* Delete the newly-created function from the PHP function table. */
+		zend_hash_del(CG(function_table), tmpname, strlen(tmpname) + 1);
 
-	/* The result of a validator is ignored */
-	PG_RETURN_VOID();
+		/* The result of a validator is ignored */
+		PG_RETURN_VOID();
+	}
+	PG_CATCH();
+	{
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 }
 
 /*
@@ -641,7 +694,6 @@ plphp_modify_tuple(zval *outdata, TriggerData *tdata)
 	{
 		zval  **element;
 		char   *attname = NameStr(tupdesc->attrs[i]->attname);
-		char   *val;
 
 		/* Fetch the attribute value from the zval */
 		if (zend_hash_find(newtup->value.ht, attname, strlen(attname) + 1,
@@ -649,39 +701,7 @@ plphp_modify_tuple(zval *outdata, TriggerData *tdata)
 			elog(ERROR, "$_TD['new'] does not contain attribute \"%s\"",
 				 attname);
 
-		/* nulls are easy */
-		if (Z_TYPE_P(element[0]) == IS_NULL)
-		{
-			vals[i] = NULL;
-			continue;
-		}
-
-		/* XXX This code appears more than once.  Refactor it. */
-		switch (Z_TYPE_P(element[0]))
-		{
-			case IS_STRING:
-				val = palloc(strlen(element[0]->value.str.val) + 1);
-				strcpy(val, element[0]->value.str.val);
-				break;
-			case IS_LONG:
-				val = palloc(15);
-				sprintf(val, "%ld", element[0]->value.lval);
-				break;
-			case IS_DOUBLE:
-				val = palloc(15);
-				sprintf(val, "%6e", element[0]->value.dval);
-				break;
-			case IS_ARRAY:
-				val = plphp_convert_to_pg_array(element[0]);
-				break;
-			default:
-				/* keep compiler quiet */
-				val = NULL;
-				elog(ERROR, "$_TD['new']['%s'] is not a valid value", attname);
-				break;
-		}
-
-		vals[i] = val;
+		vals[i] = plphp_zval_get_cstring(element[0], true, true);
 	}
 
 	/* Return to the original context so that the new tuple will survive */
@@ -1010,18 +1030,30 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 	return retval;
 }
 
-ZEND_FUNCTION(spi_exec_query)
+/*
+ * spi_exec
+ * 		PL/php equivalent to SPI_exec().
+ *
+ * This function creates and return a PHP resource which describes the result
+ * of a user-specified query.  If the query returns tuples, it's possible to
+ * retrieve them by using spi_fetch_row.
+ *
+ * Receives one or two arguments.  The mandatory first argument is the query
+ * text.  The optional second argument is the tuple limit.
+ */
+ZEND_FUNCTION(spi_exec)
 {
 	char	   *query;
 	int			query_len;
 	long		status;
 	long		limit;
-	zval	   *rv = NULL;
-	char	   *pointer = NULL;
+	php_SPIresult *SPIres;
+	int			spi_id;
 
 	if ((ZEND_NUM_ARGS() > 2) || (ZEND_NUM_ARGS() < 1))
 		WRONG_PARAM_COUNT;
 
+	/* Parse arguments */
 	if (ZEND_NUM_ARGS() == 2)
 	{
 		if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "sl",
@@ -1029,7 +1061,7 @@ ZEND_FUNCTION(spi_exec_query)
 		{
 			zend_error(E_WARNING, "Can not parse parameters in %s",
 					   get_active_function_name(TSRMLS_C));
-			return;
+			RETURN_FALSE;
 		}
 	}
 	else if (ZEND_NUM_ARGS() == 1)
@@ -1039,7 +1071,7 @@ ZEND_FUNCTION(spi_exec_query)
 		{
 			zend_error(E_WARNING, "Can not parse parameters in %s",
 					   get_active_function_name(TSRMLS_C));
-			return;
+			RETURN_FALSE;
 		}
 		limit = 0;
 	}
@@ -1047,83 +1079,170 @@ ZEND_FUNCTION(spi_exec_query)
 	{
 		zend_error(E_WARNING, "Incorrect number of parameters to %s",
 				   get_active_function_name(TSRMLS_C));
-		return;
+		RETURN_FALSE;
 	}
 
+	/* Call SPI */
 	status = SPI_exec(query, limit);
 
-	MAKE_STD_ZVAL(rv);
-	array_init(rv);
-	add_assoc_long(rv, "processed", SPI_processed);
-	add_assoc_string(rv, "status", (char *) SPI_result_code_string(status), 0);
+	/* This malloc'ed chunk is freed in php_SPIresult_destroy */
+	SPIres = (php_SPIresult *) malloc(sizeof(php_SPIresult));
+	if (!SPIres)
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory")));
 
+	/* Prepare the return resource */
+	SPIres->SPI_processed = SPI_processed;
 	if (status == SPI_OK_SELECT)
-	{
-		add_assoc_long(rv, "fetch_counter", 0);
+		SPIres->SPI_tuptable = SPI_tuptable;
+	SPIres->current_row = 0;
+	SPIres->status = status;
 
-		/* Save pointer to the SPI_tuptable */
-		pointer = (char *) palloc(32);
-		sprintf(pointer, "%p", (void *) SPI_tuptable);
-		add_assoc_string(rv, "res", (char *) pointer, true);
+	/* Register the resource to PHP so it will be able to free it */
+	spi_id = ZEND_REGISTER_RESOURCE(return_value, (void *) SPIres,
+					 				SPIres_rtype);
 
-		pfree(pointer);
-	}
-
-	*return_value = *rv;
-	zval_copy_ctor(return_value);
-
-	return;
+	RETURN_RESOURCE(spi_id);
 }
 
+/*
+ * spi_fetch_row
+ * 		Grab a row from a SPI result (from spi_exec).
+ *
+ * This function receives a resource Id and returns a PHP hash representing the
+ * next tuple in the result, or false if no tuples remain.
+ *
+ * XXX Apparently this is leaking memory.  How do we tell PHP to free the tuple
+ * once the user is done with it?
+ */
 ZEND_FUNCTION(spi_fetch_row)
 {
-	zval	   *param;
-	zval	   *tmp;
 	zval	   *row = NULL;
-	char	   *pointer = NULL;
-	SPITupleTable *tup_table;
-	long int	processed,
-				counter;
+	zval	  **z_spi = NULL;
+	php_SPIresult	*SPIres;
 
 	if (ZEND_NUM_ARGS() != 1)
 		WRONG_PARAM_COUNT;
 
-	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "a",
-							  &param) == FAILURE)
+	if (zend_get_parameters_ex(1, &z_spi) == FAILURE)
 	{
 		zend_error(E_WARNING, "Can not parse parameters in %s",
 				   get_active_function_name(TSRMLS_C));
-		return;
+		RETURN_FALSE;
+	}
+	if (z_spi == NULL)
+	{
+		zend_error(E_WARNING, "Could not get SPI resource in %s",
+				   get_active_function_name(TSRMLS_C));
+		RETURN_FALSE;
 	}
 
-	pointer = plphp_zval_get_cstring(plphp_array_get_elem(param, "res"),
-									 false, false);
-	sscanf(pointer, "%p", &tup_table);
-	pfree(pointer);
+	ZEND_FETCH_RESOURCE(SPIres, php_SPIresult *, z_spi, -1, "SPI result",
+						SPIres_rtype);
 
-	tmp = plphp_array_get_elem(param, "processed");
-	processed = tmp->value.lval;
-
-	tmp = plphp_array_get_elem(param, "fetch_counter");
-	counter = tmp->value.lval;
-
-	if (counter < processed)
+	if (SPIres->status != SPI_OK_SELECT)
 	{
-		row = plphp_zval_from_tuple(tup_table->vals[counter],
-			  						tup_table->tupdesc);
-		tmp->value.lval++;
+		zend_error(E_WARNING, "SPI status is not good");
+		RETURN_FALSE;
+	}
+
+	if (SPIres->current_row < SPIres->SPI_processed)
+	{
+		row = plphp_zval_from_tuple(SPIres->SPI_tuptable->vals[SPIres->current_row],
+			  						SPIres->SPI_tuptable->tupdesc);
+		SPIres->current_row++;
 
 		*return_value = *row;
 
 		zval_copy_ctor(return_value);
-		zval_dtor(row);
 	}
 	else
 		RETURN_FALSE;
-
-	return;
 }
 
+ZEND_FUNCTION(spi_processed)
+{
+	zval	   **z_spi = NULL;
+	php_SPIresult	*SPIres;
+
+	if (ZEND_NUM_ARGS() != 1)
+		WRONG_PARAM_COUNT;
+
+	if (zend_get_parameters_ex(1, &z_spi) == FAILURE)
+	{
+		zend_error(E_WARNING, "Cannot parse parameters in %s",
+				   get_active_function_name(TSRMLS_C));
+		RETURN_FALSE;
+	}
+	if (z_spi == NULL)
+	{
+		zend_error(E_WARNING, "Could not get SPI resource in %s",
+				   get_active_function_name(TSRMLS_C));
+		RETURN_FALSE;
+	}
+
+	ZEND_FETCH_RESOURCE(SPIres, php_SPIresult *, z_spi, -1, "SPI result",
+						SPIres_rtype);
+
+	RETURN_LONG(SPIres->SPI_processed);
+}
+
+ZEND_FUNCTION(spi_status)
+{
+	zval	   **z_spi = NULL;
+	php_SPIresult	*SPIres;
+
+	if (ZEND_NUM_ARGS() != 1)
+		WRONG_PARAM_COUNT;
+
+	if (zend_get_parameters_ex(1, &z_spi) == FAILURE)
+	{
+		zend_error(E_WARNING, "Cannot parse parameters in %s",
+				   get_active_function_name(TSRMLS_C));
+		RETURN_FALSE;
+	}
+	if (z_spi == NULL)
+	{
+		zend_error(E_WARNING, "Could not get SPI resource in %s",
+				   get_active_function_name(TSRMLS_C));
+		RETURN_FALSE;
+	}
+
+	ZEND_FETCH_RESOURCE(SPIres, php_SPIresult *, z_spi, -1, "SPI result",
+						SPIres_rtype);
+
+	RETURN_STRING(SPI_result_code_string(SPIres->status), true);
+}
+
+ZEND_FUNCTION(spi_rewind)
+{
+	zval	   **z_spi = NULL;
+	php_SPIresult	*SPIres;
+
+	if (ZEND_NUM_ARGS() != 1)
+		WRONG_PARAM_COUNT;
+
+	if (zend_get_parameters_ex(1, &z_spi) == FAILURE)
+	{
+		zend_error(E_WARNING, "Cannot parse parameters in %s",
+				   get_active_function_name(TSRMLS_C));
+		RETURN_FALSE;
+	}
+	if (z_spi == NULL)
+	{
+		zend_error(E_WARNING, "Could not get SPI resource in %s",
+				   get_active_function_name(TSRMLS_C));
+		RETURN_FALSE;
+	}
+
+	ZEND_FETCH_RESOURCE(SPIres, php_SPIresult *, z_spi, -1, "SPI result",
+						SPIres_rtype);
+
+	SPIres->current_row = 0;
+
+	RETURN_NULL();
+}
 /*
  * plphp_compile_function
  *
@@ -1526,13 +1645,13 @@ plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 	MAKE_STD_ZVAL(retval);
 	array_init(retval);
 
-	MAKE_STD_ZVAL(args);
-	array_init(args);
+	args = plphp_func_build_args(desc, fcinfo);
 
 	MAKE_STD_ZVAL(argc);
 	ZVAL_LONG(argc, desc->nargs);
 
-	args = plphp_func_build_args(desc, fcinfo);
+	zend_hash_del(&EG(symbol_table), "_args_int", strlen("_args_int") + 1);
+	zend_hash_del(&EG(symbol_table), "_argc_int", strlen("_argc_int") + 1);
 
 	ZEND_SET_SYMBOL(&EG(symbol_table), "_args_int", args);
 	ZEND_SET_SYMBOL(&EG(symbol_table), "_argc_int", argc);
@@ -1541,7 +1660,7 @@ plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 
 	zend_try
 	{
-		if (zend_eval_string(call, retval, "plphp function call"
+		if (zend_eval_string(call, retval, desc->proname
 							 TSRMLS_CC) == FAILURE)
 		{
 			/* The next compilation will blow it up */
@@ -1766,11 +1885,26 @@ plphp_error_cb(int type, const char *filename, const uint lineno,
 		CG(unclean_shutdown) = 1;
 		CG(in_compilation) = EG(in_execution) = 0;
 		EG(current_execute_data) = NULL;
+
+		zend_hash_del(&EG(symbol_table), "_args_int", strlen("_args_int") + 1);
+		zend_hash_del(&EG(symbol_table), "_argc_int", strlen("_argc_int") + 1);
+		zend_hash_del(&EG(symbol_table), "_trigargs", strlen("_trigargs") + 1);
 	}
 
 	ereport(elevel,
 			(errmsg("plphp: %s", str)));
 }
+
+void
+php_SPIresult_destroy(zend_rsrc_list_entry *rsrc TSRMLS_DC)
+{
+	php_SPIresult *res = (php_SPIresult *) rsrc->ptr;
+
+	SPI_freetuptable(res->SPI_tuptable);
+	free(res);
+}
+
+
 
 /*
  * vim:ts=4:sw=4:cino=(0
