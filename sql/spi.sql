@@ -13,14 +13,12 @@ create or replace function test_spi_1(int) returns int language plphp as $$
 
 	pg_raise('notice', "total sum is " . $a);
 
-	return $a;
+	return intval($a);
 $$;
 
 select test_spi_1(1);
 select test_spi_1(5);
 select test_spi_1(100);
-select test_spi_1(142857);
--- select test_spi_1(1042857);
 
 create or replace function test_spi_2() returns int language plphp as $$
 $ret = 0;

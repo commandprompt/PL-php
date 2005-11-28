@@ -13,7 +13,7 @@ create or replace function test_spi_1(int) returns int language plphp as $$
 
 	pg_raise('notice', "total sum is " . $a);
 
-	return $a;
+	return intval($a);
 $$;
 select test_spi_1(1);
 NOTICE:  plphp: processed: 1 status: SPI_OK_SELECT
@@ -39,11 +39,6 @@ NOTICE:  plphp: total sum is 5050
        5050
 (1 row)
 
-select test_spi_1(142857);
-NOTICE:  plphp: processed: 142857 status: SPI_OK_SELECT
-NOTICE:  plphp: total sum is 10204132653
-ERROR:  value "10204132653" is out of range for type integer
--- select test_spi_1(1042857);
 create or replace function test_spi_2() returns int language plphp as $$
 $ret = 0;
 $query = "select 1 as a union all select 2";
