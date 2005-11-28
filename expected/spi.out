@@ -1,0 +1,137 @@
+create or replace function test_spi_1(int) returns int language plphp as $$
+	$query = "select generate_series(1, $args[0])";
+	$result = spi_exec($query);
+
+	$msg = "processed: " . spi_processed($result) . " ";
+	$msg .= "status: " . spi_status($result);
+
+	pg_raise('notice', $msg);
+
+	$a = 0;
+	while ($row = spi_fetch_row($result))
+		$a += $row['generate_series'];
+
+	pg_raise('notice', "total sum is " . $a);
+
+	return $a;
+$$;
+select test_spi_1(1);
+NOTICE:  plphp: processed: 1 status: SPI_OK_SELECT
+NOTICE:  plphp: total sum is 1
+ test_spi_1 
+------------
+          1
+(1 row)
+
+select test_spi_1(5);
+NOTICE:  plphp: processed: 5 status: SPI_OK_SELECT
+NOTICE:  plphp: total sum is 15
+ test_spi_1 
+------------
+         15
+(1 row)
+
+select test_spi_1(100);
+NOTICE:  plphp: processed: 100 status: SPI_OK_SELECT
+NOTICE:  plphp: total sum is 5050
+ test_spi_1 
+------------
+       5050
+(1 row)
+
+select test_spi_1(142857);
+NOTICE:  plphp: processed: 142857 status: SPI_OK_SELECT
+NOTICE:  plphp: total sum is 10204132653
+ERROR:  value "10204132653" is out of range for type integer
+-- select test_spi_1(1042857);
+create or replace function test_spi_2() returns int language plphp as $$
+$ret = 0;
+$query = "select 1 as a union all select 2";
+$res1 = spi_exec($query);
+
+$query = "select 3 as b union all select 4";
+$res2 = spi_exec($query);
+
+while ($r1 = spi_fetch_row($res1))
+{
+	spi_rewind($res2);
+	while ($r2 = spi_fetch_row($res2))
+	{
+		$msg = sprintf("got values %d and %d", $r1['a'], $r2['b']);
+		pg_raise('notice', $msg);
+		$ret += $r1['a'] * $r2['b'];
+	}
+}
+return $ret;
+$$;
+-- 1 * 3 + 1 * 4 + 2 * 3 + 2 * 4 = 21
+select test_spi_2();
+NOTICE:  plphp: got values 1 and 3
+NOTICE:  plphp: got values 1 and 4
+NOTICE:  plphp: got values 2 and 3
+NOTICE:  plphp: got values 2 and 4
+ test_spi_2 
+------------
+         21
+(1 row)
+
+create function test_spi_limit() returns int language plphp as $$
+$ret = 0;
+$query = "select 1 as a union all select 2 union all select 3";
+$res = spi_exec($query, 2);
+while ($r = spi_fetch_row($res))
+{
+	pg_raise('notice', "got value " . $r['a']);
+	$ret += $r['a'];
+}
+return $ret;
+$$;
+-- 1 + 2 = 3
+select test_spi_limit();
+NOTICE:  plphp: got value 1
+NOTICE:  plphp: got value 2
+ test_spi_limit 
+----------------
+              3
+(1 row)
+
+create function div_by_zero(int[], int) returns int language plphp as $$
+$ret = 0;
+$divisor = $args[1];
+foreach ($args[0] as $v)
+{
+	$query = "select $v::float / $divisor as division";
+	$res = spi_exec($query);
+	while ($r = spi_fetch_row($res))
+	{
+		pg_raise('notice', sprintf("got value %f", $r['division']));
+		$ret += $r['division'];
+	}
+}
+return intval($ret);
+$$;
+-- test that a function can continue to be executed after it has raised
+-- an error
+-- 1/1 + 2/1 + 3/1 = 6
+select div_by_zero('{1,2,3}', 1);
+NOTICE:  plphp: got value 1.000000
+NOTICE:  plphp: got value 2.000000
+NOTICE:  plphp: got value 3.000000
+ div_by_zero 
+-------------
+           6
+(1 row)
+
+-- oops, division by zero
+select div_by_zero('{1,2,3}', 0);
+ERROR:  division by zero at line 7
+-- 1/2 + 2/2 + 3/2 = 3
+select div_by_zero('{1,2,3}', 2);
+NOTICE:  plphp: got value 0.500000
+NOTICE:  plphp: got value 1.000000
+NOTICE:  plphp: got value 1.500000
+ div_by_zero 
+-------------
+           3
+(1 row)
+

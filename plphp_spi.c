@@ -71,6 +71,8 @@ ZEND_FUNCTION(spi_exec)
 	long		limit;
 	php_SPIresult *SPIres;
 	int			spi_id;
+	MemoryContext oldcontext = CurrentMemoryContext;
+	ResourceOwner oldowner = CurrentResourceOwner;
 
 	if ((ZEND_NUM_ARGS() > 2) || (ZEND_NUM_ARGS() < 1))
 		WRONG_PARAM_COUNT;
@@ -104,8 +106,52 @@ ZEND_FUNCTION(spi_exec)
 		RETURN_FALSE;
 	}
 
+	BeginInternalSubTransaction(NULL);
+	MemoryContextSwitchTo(oldcontext);
+
 	/* Call SPI */
-	status = SPI_exec(query, limit);
+	PG_TRY();
+	{
+		status = SPI_exec(query, limit);
+
+		ReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+
+		/*
+		 * AtEOSubXact_SPI() should not have popped any SPI context, but just
+		 * in case it did, make sure we remain connected.
+		 */
+		SPI_restore_connection();
+	}
+	PG_CATCH();
+	{
+		ErrorData	*edata;
+
+		/* Save error info */
+		MemoryContextSwitchTo(oldcontext);
+		edata = CopyErrorData();
+		FlushErrorState();
+
+		/* Abort the inner trasaction */
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+
+		/*
+		 * If AtEOSubXact_SPI() popped any SPI context of the subxact, it will
+		 * have left us in a disconnected state.  We need this hack to return
+		 * to connected state.
+		 */
+		SPI_restore_connection();
+
+		/* bail PHP out */
+		zend_error(E_ERROR, strdup(edata->message));
+
+		/* Can't get here, but keep compiler quiet */
+		return;
+	}
+	PG_END_TRY();
 
 	/* This malloc'ed chunk is freed in php_SPIresult_destroy */
 	SPIres = (php_SPIresult *) malloc(sizeof(php_SPIresult));

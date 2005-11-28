@@ -25,4 +25,7 @@ insert into b values (3);
 insert into b values (4);
 insert into b values (5);
 insert into b values (6);
+insert into b values (1);
+insert into b values (3);
+insert into b values (2);
 select * from b;

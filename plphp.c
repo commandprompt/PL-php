@@ -191,6 +191,14 @@ static zval *plphp_proc_array = NULL;
 static StringInfo currmsg = NULL;
 
 /*
+ * for PHP <-> Postgres error message passing
+ *
+ * XXX -- it would be much better if we could save errcontext,
+ * errhint, etc as well.
+ */
+static char *error_msg = NULL;
+
+/*
  * Forward declarations
  */
 static void plphp_init_all(void);
@@ -460,7 +468,18 @@ plphp_init(void)
 		zend_catch
 		{
 			plphp_first_call = true;
-			elog(ERROR, "fatal error during PL/php initialization");
+			if (error_msg)
+			{
+				char	str[1024];
+
+				strncpy(str, error_msg, sizeof(str));
+				pfree(error_msg);
+				error_msg = NULL;
+				elog(ERROR, "fatal error during PL/php initialization: %s",
+					 str);
+			}
+			else
+				elog(ERROR, "fatal error during PL/php initialization");
 		}
 		zend_end_try();
 	}
@@ -493,11 +512,32 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 					(errcode(ERRCODE_CONNECTION_FAILURE),
 					 errmsg("could not connect to SPI manager")));
 
+		zend_try
+		{
 		/* Redirect to the appropiate handler */
 		if (CALLED_AS_TRIGGER(fcinfo))
 			retval = plphp_trigger_handler(fcinfo);
 		else
 			retval = plphp_func_handler(fcinfo);
+		}
+		zend_catch
+		{
+			if (error_msg)
+			{
+				char	str[1024];
+
+				strncpy(str, error_msg, sizeof(str));
+				pfree(error_msg);
+				error_msg = NULL;
+				elog(ERROR, "%s", str);
+			}
+			else
+				elog(ERROR, "fatal error");
+
+			/* not reached, but keep compiler quiet */
+			return 0;
+		}
+		zend_end_try();
 	}
 	PG_CATCH();
 	{
@@ -1421,30 +1461,18 @@ plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 	MAKE_STD_ZVAL(argc);
 	ZVAL_LONG(argc, desc->nargs);
 
-	zend_hash_del(&EG(symbol_table), "_args_int", strlen("_args_int") + 1);
-	zend_hash_del(&EG(symbol_table), "_argc_int", strlen("_argc_int") + 1);
-
-	ZEND_SET_SYMBOL(&EG(symbol_table), "_args_int", args);
-	ZEND_SET_SYMBOL(&EG(symbol_table), "_argc_int", argc);
+	ZEND_SET_SYMBOL(EG(active_symbol_table), "_args_int", args);
+	ZEND_SET_SYMBOL(EG(active_symbol_table), "_argc_int", argc);
 	sprintf(call, "plphp_proc_%u($_args_int, $_argc_int);",
 			fcinfo->flinfo->fn_oid);
 
-	zend_try
+	if (zend_eval_string(call, retval, desc->proname
+						 TSRMLS_CC) == FAILURE)
 	{
-		if (zend_eval_string(call, retval, desc->proname
-							 TSRMLS_CC) == FAILURE)
-		{
-			/* The next compilation will blow it up */
-			desc->fn_xmin = InvalidTransactionId;
-			elog(ERROR, "plphp: function call - failure");
-		}
-
+		/* The next compilation will blow it up */
+		desc->fn_xmin = InvalidTransactionId;
+		elog(ERROR, "plphp: function call - failure");
 	}
-	zend_catch
-	{
-		elog(ERROR, "plphp: fatal error...");
-	}
-	zend_end_try();
 
 	return retval;
 }
@@ -1465,25 +1493,17 @@ plphp_call_php_trig(plphp_proc_desc *desc, FunctionCallInfo fcinfo,
 	MAKE_STD_ZVAL(retval);
 	retval->type = IS_NULL;
 
-	ZEND_SET_SYMBOL(&EG(symbol_table), "_trigargs", trigdata);
+	ZEND_SET_SYMBOL(EG(active_symbol_table), "_trigargs", trigdata);
 	sprintf(call, "plphp_proc_%u_trigger(&$_trigargs);",
 			fcinfo->flinfo->fn_oid);
 
-	zend_try
+	if (zend_eval_string(call, retval, "plphp trigger call"
+						 TSRMLS_CC) == FAILURE)
 	{
-		if (zend_eval_string(call, retval, "plphp trigger call"
-							 TSRMLS_CC) == FAILURE)
-		{
-			/* The next compilation will blow it up */
-			desc->fn_xmin = InvalidTransactionId;
-			elog(ERROR, "plphp: trigger call - failure");
-		}
+		/* The next compilation will blow it up */
+		desc->fn_xmin = InvalidTransactionId;
+		elog(ERROR, "plphp: trigger call - failure");
 	}
-	zend_catch
-	{
-		elog(ERROR, "plphp: fatal error...");
-	}
-	zend_end_try();
 
 	return retval;
 }
@@ -1611,16 +1631,28 @@ plphp_error_cb(int type, const char *filename, const uint lineno,
 			break;
 	}
 
+	/*
+	 * If this is a severe problem, we need to make PHP aware of it, so first
+	 * save the error message and then bail out of the PHP block.  With luck,
+	 * this will be trapped by a zend_try/zend_catch block outwards in PL/php
+	 * code, which would translate it to a Postgres elog(ERROR), leaving
+	 * everything in a consistent state.
+	 *
+	 * For this to work, there must be a try/catch block covering every place
+	 * where PHP may raise an error!
+	 */
 	if (elevel >= ERROR)
 	{
-		/* imitate _zend_bailout  */
-		CG(unclean_shutdown) = 1;
-		CG(in_compilation) = EG(in_execution) = 0;
-		EG(current_execute_data) = NULL;
+		if (lineno != 0)
+		{
+			char	msgline[1024];
+			snprintf(msgline, sizeof(msgline), "%s at line %d", str, lineno);
+			error_msg = pstrdup(msgline);
+		}
+		else
+			error_msg = pstrdup(str);
 
-		zend_hash_del(&EG(symbol_table), "_args_int", strlen("_args_int") + 1);
-		zend_hash_del(&EG(symbol_table), "_argc_int", strlen("_argc_int") + 1);
-		zend_hash_del(&EG(symbol_table), "_trigargs", strlen("_trigargs") + 1);
+		zend_bailout();
 	}
 
 	ereport(elevel,
