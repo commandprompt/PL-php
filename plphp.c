@@ -31,17 +31,15 @@
  *********************************************************************
  */
 
-/* Our own stuff first */
-#include "plphp_io.h"
-
 /* PostgreSQL stuff */
+#include "postgres.h"
 
+#include "access/heapam.h"
 #include "catalog/catversion.h"
 #include "catalog/pg_language.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
 #include "commands/trigger.h"
-#include "executor/spi.h"
 #include "fmgr.h"
 #include "funcapi.h"			/* needed for SRF support */
 #include "lib/stringinfo.h"
@@ -73,6 +71,10 @@
 #include "php_ini.h"			/* needed for INI_HARDCODED */
 #include "php_main.h"
 
+/* Our own stuff */
+#include "plphp_io.h"
+#include "plphp_spi.h"
+
 /* system stuff */
 #if HAVE_FCNTL_H
 #include <fcntl.h>
@@ -100,7 +102,9 @@
  * actually use those, but they are needed so that the linker can do its
  * job without complaining.
  *
- * FIXME -- this looks like a mighty hacky way of doing things.
+ * FIXME -- this looks like a mighty hacky way of doing things.  Apparently
+ * a more correct way of doing it would be creating a new PHP SAPI, but I'm
+ * refraining from that, at least for now.
 */
 void	   *ap_loaded_modules = NULL;
 void	   *unixd_config = NULL;
@@ -178,17 +182,6 @@ typedef struct plphp_proc_desc
 } plphp_proc_desc;
 
 /*
- * Definition for PHP "resource" result type from SPI_execute.
- */
-typedef struct
-{
-	SPITupleTable  *SPI_tuptable;
-	uint32			SPI_processed;
-	uint32			current_row;
-	int				status;
-} php_SPIresult;
-
-/*
  * Global data
  */
 static bool plphp_first_call = true;
@@ -196,9 +189,6 @@ static zval *plphp_proc_array = NULL;
 
 /* for PHP write/flush */
 static StringInfo currmsg = NULL;
-
-/* resource type Id for SPIresult */
-static int SPIres_rtype;
 
 /*
  * Forward declarations
@@ -222,14 +212,6 @@ static zval *plphp_call_php_trig(plphp_proc_desc *, FunctionCallInfo, zval *);
 
 static void plphp_error_cb(int type, const char *filename, const uint lineno,
 								  const char *fmt, va_list args);
-void php_SPIresult_destroy(zend_rsrc_list_entry *rsrc TSRMLS_DC);
-
-ZEND_FUNCTION(spi_exec);
-ZEND_FUNCTION(spi_fetch_row);
-ZEND_FUNCTION(spi_processed);
-ZEND_FUNCTION(spi_status);
-ZEND_FUNCTION(spi_rewind);
-ZEND_FUNCTION(pg_raise);
 
 /*
  * FIXME -- this comment is quite misleading actually, which is not surprising
@@ -316,16 +298,6 @@ php_plphp_log_messages(char *message)
 	elog(LOG, "(log message called) plphp: %s", message);
 }
 
-/* FIXME -- this is a misnomer now. */
-zend_function_entry spi_functions[] = {
-	ZEND_FE(spi_exec, NULL)
-	ZEND_FE(spi_fetch_row, NULL)
-	ZEND_FE(spi_processed, NULL)
-	ZEND_FE(spi_status, NULL)
-	ZEND_FE(spi_rewind, NULL)
-	ZEND_FE(pg_raise, NULL)
-	{NULL, NULL, NULL}
-};
 
 static sapi_module_struct plphp_sapi_module = {
 	"plphp",					/* name */
@@ -396,7 +368,6 @@ plphp_init(void)
 	 */
 	PG_TRY();
 	{
-
 		/* Omit HTML tags from output */
 		plphp_sapi_module.phpinfo_as_text = 1;
 		sapi_startup(&plphp_sapi_module);
@@ -438,6 +409,18 @@ plphp_init(void)
 			INI_HARDCODED("html_errors", "0");
 			INI_HARDCODED("implicit_flush", "1");
 			INI_HARDCODED("max_execution_time", "0");
+
+			/*
+			 * Set memory limit to ridiculously high value.  This helps the
+			 * server not to crash, because the PHP allocator has the really
+			 * stupid idea of calling exit() if the limit is exceeded.
+			 */
+			{
+				char	limit[15];
+
+				snprintf(limit, sizeof(limit), "%d", 1 << 30);
+				INI_HARDCODED("memory_limit", limit);
+			}
 
 			/* tell the engine we're in non-html mode */
 			zend_uv.html_errors = false;
@@ -820,7 +803,8 @@ plphp_trig_build_args(FunctionCallInfo fcinfo)
 }
 
 /*
- * plphp_trigger_handler()		- Handler for trigger function calls
+ * plphp_trigger_handler
+ * 		Handler for trigger function calls
  */
 static Datum
 plphp_trigger_handler(FunctionCallInfo fcinfo)
@@ -914,7 +898,8 @@ plphp_trigger_handler(FunctionCallInfo fcinfo)
 }
 
 /*
- * plphp_func_handler()		- Handler for regular function calls
+ * plphp_func_handler
+ * 		Handler for regular function calls
  */
 static Datum
 plphp_func_handler(FunctionCallInfo fcinfo)
@@ -1030,219 +1015,6 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 	return retval;
 }
 
-/*
- * spi_exec
- * 		PL/php equivalent to SPI_exec().
- *
- * This function creates and return a PHP resource which describes the result
- * of a user-specified query.  If the query returns tuples, it's possible to
- * retrieve them by using spi_fetch_row.
- *
- * Receives one or two arguments.  The mandatory first argument is the query
- * text.  The optional second argument is the tuple limit.
- */
-ZEND_FUNCTION(spi_exec)
-{
-	char	   *query;
-	int			query_len;
-	long		status;
-	long		limit;
-	php_SPIresult *SPIres;
-	int			spi_id;
-
-	if ((ZEND_NUM_ARGS() > 2) || (ZEND_NUM_ARGS() < 1))
-		WRONG_PARAM_COUNT;
-
-	/* Parse arguments */
-	if (ZEND_NUM_ARGS() == 2)
-	{
-		if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "sl",
-								  &query, &query_len, &limit) == FAILURE)
-		{
-			zend_error(E_WARNING, "Can not parse parameters in %s",
-					   get_active_function_name(TSRMLS_C));
-			RETURN_FALSE;
-		}
-	}
-	else if (ZEND_NUM_ARGS() == 1)
-	{
-		if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
-								  &query, &query_len) == FAILURE)
-		{
-			zend_error(E_WARNING, "Can not parse parameters in %s",
-					   get_active_function_name(TSRMLS_C));
-			RETURN_FALSE;
-		}
-		limit = 0;
-	}
-	else
-	{
-		zend_error(E_WARNING, "Incorrect number of parameters to %s",
-				   get_active_function_name(TSRMLS_C));
-		RETURN_FALSE;
-	}
-
-	/* Call SPI */
-	status = SPI_exec(query, limit);
-
-	/* This malloc'ed chunk is freed in php_SPIresult_destroy */
-	SPIres = (php_SPIresult *) malloc(sizeof(php_SPIresult));
-	if (!SPIres)
-		ereport(ERROR,
-				(errcode(ERRCODE_OUT_OF_MEMORY),
-				 errmsg("out of memory")));
-
-	/* Prepare the return resource */
-	SPIres->SPI_processed = SPI_processed;
-	if (status == SPI_OK_SELECT)
-		SPIres->SPI_tuptable = SPI_tuptable;
-	SPIres->current_row = 0;
-	SPIres->status = status;
-
-	/* Register the resource to PHP so it will be able to free it */
-	spi_id = ZEND_REGISTER_RESOURCE(return_value, (void *) SPIres,
-					 				SPIres_rtype);
-
-	RETURN_RESOURCE(spi_id);
-}
-
-/*
- * spi_fetch_row
- * 		Grab a row from a SPI result (from spi_exec).
- *
- * This function receives a resource Id and returns a PHP hash representing the
- * next tuple in the result, or false if no tuples remain.
- *
- * XXX Apparently this is leaking memory.  How do we tell PHP to free the tuple
- * once the user is done with it?
- */
-ZEND_FUNCTION(spi_fetch_row)
-{
-	zval	   *row = NULL;
-	zval	  **z_spi = NULL;
-	php_SPIresult	*SPIres;
-
-	if (ZEND_NUM_ARGS() != 1)
-		WRONG_PARAM_COUNT;
-
-	if (zend_get_parameters_ex(1, &z_spi) == FAILURE)
-	{
-		zend_error(E_WARNING, "Can not parse parameters in %s",
-				   get_active_function_name(TSRMLS_C));
-		RETURN_FALSE;
-	}
-	if (z_spi == NULL)
-	{
-		zend_error(E_WARNING, "Could not get SPI resource in %s",
-				   get_active_function_name(TSRMLS_C));
-		RETURN_FALSE;
-	}
-
-	ZEND_FETCH_RESOURCE(SPIres, php_SPIresult *, z_spi, -1, "SPI result",
-						SPIres_rtype);
-
-	if (SPIres->status != SPI_OK_SELECT)
-	{
-		zend_error(E_WARNING, "SPI status is not good");
-		RETURN_FALSE;
-	}
-
-	if (SPIres->current_row < SPIres->SPI_processed)
-	{
-		row = plphp_zval_from_tuple(SPIres->SPI_tuptable->vals[SPIres->current_row],
-			  						SPIres->SPI_tuptable->tupdesc);
-		SPIres->current_row++;
-
-		*return_value = *row;
-
-		zval_copy_ctor(return_value);
-	}
-	else
-		RETURN_FALSE;
-}
-
-ZEND_FUNCTION(spi_processed)
-{
-	zval	   **z_spi = NULL;
-	php_SPIresult	*SPIres;
-
-	if (ZEND_NUM_ARGS() != 1)
-		WRONG_PARAM_COUNT;
-
-	if (zend_get_parameters_ex(1, &z_spi) == FAILURE)
-	{
-		zend_error(E_WARNING, "Cannot parse parameters in %s",
-				   get_active_function_name(TSRMLS_C));
-		RETURN_FALSE;
-	}
-	if (z_spi == NULL)
-	{
-		zend_error(E_WARNING, "Could not get SPI resource in %s",
-				   get_active_function_name(TSRMLS_C));
-		RETURN_FALSE;
-	}
-
-	ZEND_FETCH_RESOURCE(SPIres, php_SPIresult *, z_spi, -1, "SPI result",
-						SPIres_rtype);
-
-	RETURN_LONG(SPIres->SPI_processed);
-}
-
-ZEND_FUNCTION(spi_status)
-{
-	zval	   **z_spi = NULL;
-	php_SPIresult	*SPIres;
-
-	if (ZEND_NUM_ARGS() != 1)
-		WRONG_PARAM_COUNT;
-
-	if (zend_get_parameters_ex(1, &z_spi) == FAILURE)
-	{
-		zend_error(E_WARNING, "Cannot parse parameters in %s",
-				   get_active_function_name(TSRMLS_C));
-		RETURN_FALSE;
-	}
-	if (z_spi == NULL)
-	{
-		zend_error(E_WARNING, "Could not get SPI resource in %s",
-				   get_active_function_name(TSRMLS_C));
-		RETURN_FALSE;
-	}
-
-	ZEND_FETCH_RESOURCE(SPIres, php_SPIresult *, z_spi, -1, "SPI result",
-						SPIres_rtype);
-
-	RETURN_STRING(SPI_result_code_string(SPIres->status), true);
-}
-
-ZEND_FUNCTION(spi_rewind)
-{
-	zval	   **z_spi = NULL;
-	php_SPIresult	*SPIres;
-
-	if (ZEND_NUM_ARGS() != 1)
-		WRONG_PARAM_COUNT;
-
-	if (zend_get_parameters_ex(1, &z_spi) == FAILURE)
-	{
-		zend_error(E_WARNING, "Cannot parse parameters in %s",
-				   get_active_function_name(TSRMLS_C));
-		RETURN_FALSE;
-	}
-	if (z_spi == NULL)
-	{
-		zend_error(E_WARNING, "Could not get SPI resource in %s",
-				   get_active_function_name(TSRMLS_C));
-		RETURN_FALSE;
-	}
-
-	ZEND_FETCH_RESOURCE(SPIres, php_SPIresult *, z_spi, -1, "SPI result",
-						SPIres_rtype);
-
-	SPIres->current_row = 0;
-
-	RETURN_NULL();
-}
 /*
  * plphp_compile_function
  *
@@ -1527,7 +1299,6 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 
 /*
  * plphp_func_build_args
- *
  * 		Build a PHP array representing the arguments to the function
  */
 static zval *
@@ -1786,45 +1557,6 @@ plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc)
 }
 
 /*
- * pg_raise
- * 		User-callable function for sending messages to the Postgres log.
- */
-ZEND_FUNCTION(pg_raise)
-{
-	char	   *level = NULL,
-			   *message = NULL;
-	int			level_len,
-				message_len,
-				elevel = 0;
-
-	if (ZEND_NUM_ARGS() != 2)
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("wrong number of arguments to %s", "pg_raise")));
-	}
-
-	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "ss",
-							  &level, &level_len,
-							  &message, &message_len) == FAILURE)
-	{
-		zend_error(E_WARNING, "cannot parse parameters in %s",
-				   get_active_function_name(TSRMLS_C));
-	}
-
-	if (strcasecmp(level, "ERROR") == 0)
-		elevel = E_ERROR;
-	else if (strcasecmp(level, "WARNING") == 0)
-		elevel = E_WARNING;
-	else if (strcasecmp(level, "NOTICE") == 0)
-		elevel = E_NOTICE;
-	else
-		zend_error(E_ERROR, "incorrect log level");
-
-	zend_error(elevel, message);
-}
-
-/*
  * plphp_error_cb
  *
  * A callback for PHP error handling.  This is called when the php_error or
@@ -1894,17 +1626,6 @@ plphp_error_cb(int type, const char *filename, const uint lineno,
 	ereport(elevel,
 			(errmsg("plphp: %s", str)));
 }
-
-void
-php_SPIresult_destroy(zend_rsrc_list_entry *rsrc TSRMLS_DC)
-{
-	php_SPIresult *res = (php_SPIresult *) rsrc->ptr;
-
-	SPI_freetuptable(res->SPI_tuptable);
-	free(res);
-}
-
-
 
 /*
  * vim:ts=4:sw=4:cino=(0

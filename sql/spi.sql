@@ -20,6 +20,7 @@ select test_spi_1(1);
 select test_spi_1(5);
 select test_spi_1(100);
 select test_spi_1(142857);
+-- select test_spi_1(1042857);
 
 create or replace function test_spi_2() returns void language plphp as $$
 $query = "select 1 as a union all select 2";

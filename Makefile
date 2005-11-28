@@ -1,7 +1,7 @@
 # $Id$
 
 MODULE_big = plphp
-OBJS = plphp.o plphp_io.o
+OBJS = plphp.o plphp_io.o plphp_spi.o
 REGRESS = basic trigger
 PG_CPPFLAGS = $(shell php-config --includes)
 SHLIB_LINK = -lphp4 -L/usr/lib/apache2/modules
