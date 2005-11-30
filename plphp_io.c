@@ -39,8 +39,11 @@ plphp_zval_from_tuple(HeapTuple tuple, TupleDesc tupdesc)
 
 		/* and get its value */
 		if ((attdata = SPI_getvalue(tuple, tupdesc, i + 1)) != NULL)
+		{
 			/* "true" means strdup the string */
 			add_assoc_string(array, attname, attdata, true);
+			pfree(attdata);
+		}
 		else
 			add_assoc_null(array, attname);
 	}
@@ -86,9 +89,10 @@ plphp_htup_from_zval(zval *val, TupleDesc tupdesc)
 	}
 
 	attinmeta = TupleDescGetAttInMetadata(tupdesc);
-	ret = BuildTupleFromCStrings(attinmeta, values);
 
 	MemoryContextSwitchTo(oldcxt);
+	ret = BuildTupleFromCStrings(attinmeta, values);
+
 	MemoryContextDelete(tmpcxt);
 
 	return ret;

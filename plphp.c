@@ -376,39 +376,39 @@ plphp_init(void)
 	 */
 	PG_TRY();
 	{
-		/* Omit HTML tags from output */
-		plphp_sapi_module.phpinfo_as_text = 1;
-		sapi_startup(&plphp_sapi_module);
-
-		if (php_module_startup(&plphp_sapi_module, NULL, 0) == FAILURE)
-			elog(ERROR, "php_module_startup call failed");
-
-		/*
-		 * FIXME -- Figure out what this comment is supposed to mean:
-		 *
-		 * There is no way to see if we must call zend_ini_deactivate()
-		 * since we cannot check if EG(ini_directives) has been initialised
-		 * because the executor's constructor does not initialize it.
-		 * Apart from that there seems no need for zend_ini_deactivate() yet.
-		 * So we error out.
-		 */
-
-		/* Init procedure cache */
-		MAKE_STD_ZVAL(plphp_proc_array);
-		array_init(plphp_proc_array);
-		plphp_first_call = false;
-
-		zend_register_functions(
-#if PHP_MAJOR_VERSION == 5
-								NULL,
-#endif
-								spi_functions, NULL,
-								MODULE_PERSISTENT TSRMLS_CC);
-
-		PG(during_request_startup) = true;
-
 		zend_try
 		{
+			/* Omit HTML tags from output */
+			plphp_sapi_module.phpinfo_as_text = 1;
+			sapi_startup(&plphp_sapi_module);
+
+			if (php_module_startup(&plphp_sapi_module, NULL, 0) == FAILURE)
+				elog(ERROR, "php_module_startup call failed");
+
+			/*
+			 * FIXME -- Figure out what this comment is supposed to mean:
+			 *
+			 * There is no way to see if we must call zend_ini_deactivate()
+			 * since we cannot check if EG(ini_directives) has been initialised
+			 * because the executor's constructor does not initialize it.
+			 * Apart from that there seems no need for zend_ini_deactivate() yet.
+			 * So we error out.
+			 */
+
+			/* Init procedure cache */
+			MAKE_STD_ZVAL(plphp_proc_array);
+			array_init(plphp_proc_array);
+			plphp_first_call = false;
+
+			zend_register_functions(
+#if PHP_MAJOR_VERSION == 5
+									NULL,
+#endif
+									spi_functions, NULL,
+									MODULE_PERSISTENT TSRMLS_CC);
+
+			PG(during_request_startup) = true;
+
 			/* Set some defaults */
 			SG(options) |= SAPI_OPTION_NO_CHDIR;
 
@@ -514,11 +514,11 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 
 		zend_try
 		{
-		/* Redirect to the appropiate handler */
-		if (CALLED_AS_TRIGGER(fcinfo))
-			retval = plphp_trigger_handler(fcinfo);
-		else
-			retval = plphp_func_handler(fcinfo);
+			/* Redirect to the appropiate handler */
+			if (CALLED_AS_TRIGGER(fcinfo))
+				retval = plphp_trigger_handler(fcinfo);
+			else
+				retval = plphp_func_handler(fcinfo);
 		}
 		zend_catch
 		{
@@ -605,24 +605,45 @@ plphp_validator(PG_FUNCTION_ARGS)
 		sprintf(tmpsrc, "function %s($args, $argc){%s}",
 				tmpname, prosrc);
 
-		/*
-		 * Delete the function from the PHP function table, just in case it
-		 * already existed.  This is quite unlikely, but still.
-		 */
-		zend_hash_del(CG(function_table), tmpname, strlen(tmpname) + 1);
+		zend_try
+		{
+			/*
+			 * Delete the function from the PHP function table, just in case it
+			 * already existed.  This is quite unlikely, but still.
+			 */
+			zend_hash_del(CG(function_table), tmpname, strlen(tmpname) + 1);
 
-		/*
-		 * Let the user see the fireworks.  If the function doesn't validate,
-		 * the ERROR will be raised and the function will not be created.
-		 */
-		if (zend_eval_string(tmpsrc, NULL,
-							 "plphp function temp source" TSRMLS_CC) == FAILURE)
-			elog(ERROR, "function \"%s\" does not validate", funcname);
+			/*
+			 * Let the user see the fireworks.  If the function doesn't validate,
+			 * the ERROR will be raised and the function will not be created.
+			 */
+			if (zend_eval_string(tmpsrc, NULL,
+								 "plphp function temp source" TSRMLS_CC) == FAILURE)
+				elog(ERROR, "function \"%s\" does not validate", funcname);
 
-		pfree(tmpsrc);
+			pfree(tmpsrc);
 
-		/* Delete the newly-created function from the PHP function table. */
-		zend_hash_del(CG(function_table), tmpname, strlen(tmpname) + 1);
+			/* Delete the newly-created function from the PHP function table. */
+			zend_hash_del(CG(function_table), tmpname, strlen(tmpname) + 1);
+		}
+		zend_catch
+		{
+			if (error_msg)
+			{
+				char	str[1024];
+
+				strncpy(str, error_msg, sizeof(str));
+				pfree(error_msg);
+				error_msg = NULL;
+				elog(ERROR, "function \"%s\" does not validate: %s", funcname, str);
+			}
+			else
+				elog(ERROR, "fatal error");
+
+			/* not reached, but keep compiler quiet */
+			return 0;
+		}
+		zend_end_try();
 
 		/* The result of a validator is ignored */
 		PG_RETURN_VOID();

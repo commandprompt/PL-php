@@ -148,6 +148,8 @@ SELECT * FROM numbers;
  42 | hello new jersey |   3.14 | {{1,7},{2,3},{4,8},{5,6}}
 (2 rows)
 
+DROP TABLE numbers;
+-- Test the relid and relname attributes of $_TD
 CREATE TABLE test_rel (tbl name, relid oid);
 CREATE FUNCTION test_rel() RETURNS TRIGGER LANGUAGE plphp AS $$
 	$_TD['new']['tbl'] = $_TD['relname'];

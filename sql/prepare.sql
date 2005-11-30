@@ -37,16 +37,6 @@ CREATE FUNCTION empcomp(employee) RETURNS integer AS '
     return $args[0][''basesalary''] + $args[0][''bonus''];
 ' LANGUAGE plphp;
 
-CREATE OR REPLACE FUNCTION php_record(integer) RETURNS record AS '
-$ret[f1]=$args[0];
-$ret[f2]="hello";
-$ret[f3]="world";
-return $ret;
-' LANGUAGE 'plphp';
-
-CREATE OR REPLACE FUNCTION php_array(anyelement, anyelement, integer) RETURNS anyarray AS '
-return $args;
-' LANGUAGE plphp;
 
 CREATE OR REPLACE FUNCTION php_arr_in(integer, integer[][]) returns integer AS '
 return $args[1][0][1];

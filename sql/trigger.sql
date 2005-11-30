@@ -116,7 +116,9 @@ CREATE OR REPLACE FUNCTION numbers_trig() RETURNS TRIGGER LANGUAGE plphp AS $$
 $$;
 INSERT INTO numbers DEFAULT VALUES;
 SELECT * FROM numbers;
+DROP TABLE numbers;
 
+-- Test the relid and relname attributes of $_TD
 CREATE TABLE test_rel (tbl name, relid oid);
 CREATE FUNCTION test_rel() RETURNS TRIGGER LANGUAGE plphp AS $$
 	$_TD['new']['tbl'] = $_TD['relname'];

@@ -1,7 +1,54 @@
 --
---testing pseudotypes support
---select
---
+-- Test pseudotypes and composite type support
+
+CREATE OR REPLACE FUNCTION php_record(integer) RETURNS record
+LANGUAGE plphp AS $$
+	$ret['f1']=$args[0];
+	$ret['f2']="hello world, you really rock here now don't you";
+	$ret['f3']="hey goodbye world, now it's been really nice to meet you";
+	return $ret;
+$$;
+
+SELECT * FROM php_record(1) AS (f1 integer, f2 text, f3 text);
+
+CREATE OR REPLACE FUNCTION php_array(anyelement, anyelement, integer)
+RETURNS anyarray LANGUAGE plphp AS $$
+	return $args;
+$$;
 
 SELECT php_array(3,2,1);
-SELECT * FROM php_record(1) AS (f1 integer, f2 text, f3 text);
+
+CREATE TABLE numbers (id int, spanish text, french text);
+insert into numbers values (1, 'uno', 'un');
+insert into numbers values (2, 'dos', 'deux');
+insert into numbers values (3, 'tres', 'trois');
+insert into numbers values (4, 'cuatro', 'quatre');
+insert into numbers values (5, 'cinco', 'cinq');
+insert into numbers values (6, 'seis', 'six');
+insert into numbers values (7, 'siete', 'sept');
+insert into numbers values (8, 'ocho', 'huit');
+insert into numbers values (9, 'nueve', 'neuf');
+
+CREATE TABLE languages (id int, langname text);
+insert into languages values (1, 'spanish');
+insert into languages values (2, 'french');
+
+CREATE TYPE translated_number AS (number int, translation text, language text);
+
+CREATE FUNCTION translated_number(numbers, languages)
+RETURNS translated_number LANGUAGE plphp AS $$
+	$ret = array();
+	$ret['number'] = $args[0]['id'];
+	$ret['translation'] = $args[0][$args[1]['langname']];
+	$ret['language'] = $args[1]['langname'];
+	return $ret;
+$$;
+
+SELECT (translated_number(numbers.*, languages.*)).*
+  FROM numbers,languages
+ WHERE numbers.id = 3 AND languages.id = 2;
+
+SELECT * FROM translated_number(
+	row(1000, 'mil (español)', 'mil (français)')::numbers,
+	row(1, 'french')::languages
+);

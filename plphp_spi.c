@@ -224,9 +224,11 @@ ZEND_FUNCTION(spi_fetch_row)
 		*return_value = *row;
 
 		zval_copy_ctor(return_value);
+		zval_dtor(row);
 	}
 	else
 		RETURN_FALSE;
+
 }
 
 ZEND_FUNCTION(spi_processed)
