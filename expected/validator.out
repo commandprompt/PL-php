@@ -1,0 +1,21 @@
+--
+-- Test the validator
+--
+CREATE FUNCTION invalid() RETURNS void LANGUAGE plphp AS $$
+	asdasd
+$$;
+ERROR:  function "invalid" does not validate: parse error, unexpected '}' at line 3
+CREATE FUNCTION invalid() RETURNS void LANGUAGE plphp AS $$
+	{
+$$;
+ERROR:  function "invalid" does not validate: parse error, unexpected $ at line 3
+CREATE OR REPLACE FUNCTION valid() RETURNS void LANGUAGE plphp AS $$
+	array_append();
+$$;
+select valid();
+ERROR:  Call to undefined function:  array_append() at line 2
+CREATE FUNCTION valid2() RETURNS void LANGUAGE plphp AS $$
+	return array();
+$$;
+select valid2();
+ERROR:  this plphp function cannot return arrays
