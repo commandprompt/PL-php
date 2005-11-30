@@ -121,3 +121,34 @@ SELECT php_concat(
 	php_substr($$On Saturday, we spent a day sight-seeing, mainly in Kamakura where we visted a couple of temples and a very large cast iron Buddha. Lunch was Korean barbeque, following which we took a trip back to Tokyo station on the Shinkansen, or Bullet Train.$$, 16, 25),
 	php_lc($$A few beers in the 'Victorian Pub'$$)
 );
+
+CREATE FUNCTION php_arr_in(integer[], integer, integer)
+returns integer language plphp AS $$
+	return $args[0][$args[1]][$args[2]];
+$$;
+
+SELECT php_arr_in(ARRAY[[1, 10], [2, 4], [3, 5]], 0, 0);
+SELECT php_arr_in(ARRAY[[1, 10], [2, 4], [3, 5]], 1, 1);
+SELECT php_arr_in(ARRAY[[1, 10], [2, 4], [3, 5]], 2, 1);
+SELECT php_arr_in(ARRAY[[1, 10], [2, 4], [3, 5]], 1, 2);
+
+CREATE FUNCTION php_array() RETURNS integer[] AS $$
+ $ret1 = array(1, 3, 5);
+ $ret2 = array(2, 4, 6);
+
+ return array($ret1, $ret2);
+$$ language plphp;
+
+select php_array();
+
+create function foo() returns record language plphp as $$
+	return 1;
+$$;
+select foo();
+select * FROM foo() as (a int);
+
+create or replace function foo(anyelement) returns anyarray
+language plphp as $$
+	return 1;
+$$;
+select foo(1);

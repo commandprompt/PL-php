@@ -983,8 +983,10 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("function declared to return array must return an array")));
-
-	/* XXX -- do we need to do the same for tuples? */
+	if ((desc->ret_type & PL_TUPLE) && (phpret->type != IS_ARRAY))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				 errmsg("function declared to return tuple must return an array")));
 
 	/*
 	 * Disconnect from SPI manager and then create the return values datum (if
