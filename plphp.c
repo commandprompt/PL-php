@@ -97,6 +97,15 @@
 #endif
 
 
+#undef DEBUG_PLPHP_MEMORY
+
+#ifdef DEBUG_PLPHP_MEMORY
+#define REPORT_PHP_MEMUSAGE(where) \
+	elog(NOTICE, "PHP mem usage: «%s»: %u", where, AG(allocated_memory));
+#else
+#define REPORT_PHP_MEMUSAGE(a) 
+#endif
+
 /*
  * These symbols are needed by the Apache module (libphp*.so).  We don't
  * actually use those, but they are needed so that the linker can do its
@@ -296,14 +305,13 @@ sapi_plphp_flush(void *sth)
 static int
 sapi_plphp_send_headers(TSRMLS_CC)
 {
-	elog(LOG, "sapi_plphp_send_headers called");
 	return 1;
 }
 
 static void
 php_plphp_log_messages(char *message)
 {
-	elog(LOG, "(log message called) plphp: %s", message);
+	elog(LOG, "plphp: %s", message);
 }
 
 
@@ -371,19 +379,29 @@ plphp_init(void)
 		return;
 
 	/*
-	 * Need a Pg try/catch block to prevent a initialization-
+	 * Need a Pg try/catch block to prevent an initialization-
 	 * failure from bringing the whole server down.
 	 */
 	PG_TRY();
 	{
 		zend_try
 		{
+			/*
+			 * XXX This is a hack -- we are replacing the error callback in an
+			 * invasive manner that should not be expected to work on future PHP
+			 * releases.
+			 */
+			zend_error_cb = plphp_error_cb;
+
 			/* Omit HTML tags from output */
 			plphp_sapi_module.phpinfo_as_text = 1;
 			sapi_startup(&plphp_sapi_module);
 
 			if (php_module_startup(&plphp_sapi_module, NULL, 0) == FAILURE)
 				elog(ERROR, "php_module_startup call failed");
+
+			/* php_module_startup changed it, so put it back */
+			zend_error_cb = plphp_error_cb;
 
 			/*
 			 * FIXME -- Figure out what this comment is supposed to mean:
@@ -455,12 +473,6 @@ plphp_init(void)
 															 "SPI result",
 															 0);
 
-			/*
-			 * XXX This is a hack -- we are replacing the error callback in an
-			 * invasive manner that should not be expected to work on future PHP
-			 * releases.
-			 */
-			zend_error_cb = plphp_error_cb;
 
 			/* Ok, we're done */
 			plphp_first_call = false;
@@ -522,6 +534,7 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 		}
 		zend_catch
 		{
+			REPORT_PHP_MEMUSAGE("reporting error");
 			if (error_msg)
 			{
 				char	str[1024];
@@ -562,7 +575,7 @@ plphp_validator(PG_FUNCTION_ARGS)
 	HeapTuple		procTup;
 	char			tmpname[32];
 	char			funcname[NAMEDATALEN];
-	char		   *tmpsrc,
+	char		   *tmpsrc = NULL,
 				   *prosrc;
 	Datum			prosrcdatum;
 	bool			isnull;
@@ -605,6 +618,8 @@ plphp_validator(PG_FUNCTION_ARGS)
 		sprintf(tmpsrc, "function %s($args, $argc){%s}",
 				tmpname, prosrc);
 
+		pfree(prosrc);
+
 		zend_try
 		{
 			/*
@@ -622,17 +637,21 @@ plphp_validator(PG_FUNCTION_ARGS)
 				elog(ERROR, "function \"%s\" does not validate", funcname);
 
 			pfree(tmpsrc);
+			tmpsrc = NULL;
 
 			/* Delete the newly-created function from the PHP function table. */
 			zend_hash_del(CG(function_table), tmpname, strlen(tmpname) + 1);
 		}
 		zend_catch
 		{
+			if (tmpsrc != NULL)
+				pfree(tmpsrc);
+
 			if (error_msg)
 			{
 				char	str[1024];
 
-				strncpy(str, error_msg, sizeof(str));
+				StrNCpy(str, error_msg, sizeof(str));
 				pfree(error_msg);
 				error_msg = NULL;
 				elog(ERROR, "function \"%s\" does not validate: %s", funcname, str);
@@ -684,6 +703,12 @@ plphp_get_function_tupdesc(Oid result_type, Node *rsinfo)
  * 		Return the modified NEW tuple, for use as return value in a BEFORE
  * 		trigger.  outdata must point to the $_TD variable from the PHP
  * 		function.
+ *
+ * The tuple will be allocated in the current memory context and must be freed
+ * by the caller.
+ *
+ * XXX Possible optimization: make this a global context that is not deleted,
+ * but only reset each time this function is called.
  */
 static HeapTuple
 plphp_modify_tuple(zval *outdata, TriggerData *tdata)
@@ -698,7 +723,7 @@ plphp_modify_tuple(zval *outdata, TriggerData *tdata)
 	MemoryContext tmpcxt,
 				  oldcxt;
 
-	tmpcxt = AllocSetContextCreate(TopTransactionContext,
+	tmpcxt = AllocSetContextCreate(CurTransactionContext,
 								   "PL/php NEW context",
 								   ALLOCSET_DEFAULT_MINSIZE,
 								   ALLOCSET_DEFAULT_INITSIZE,
@@ -880,14 +905,22 @@ plphp_trigger_handler(FunctionCallInfo fcinfo)
 	/*
 	 * Find or compile the function
 	 */
+	REPORT_PHP_MEMUSAGE("going to compile trigger function");
 	desc = plphp_compile_function(fcinfo->flinfo->fn_oid, true);
 
 	PG(safe_mode) = desc->lanpltrusted;
 
+	REPORT_PHP_MEMUSAGE("going to build the trigger arg");
+
 	zTrigData = plphp_trig_build_args(fcinfo);
+
+	REPORT_PHP_MEMUSAGE("going to call the trigger function");
+
 	phpret = plphp_call_php_trig(desc, fcinfo, zTrigData);
 	if (!phpret)
 		elog(ERROR, "error during execution of function %s", desc->proname);
+
+	REPORT_PHP_MEMUSAGE("trigger called, going to build the return value");
 
 	/*
 	 * Disconnect from SPI manager and then create the return values datum (if
@@ -898,7 +931,6 @@ plphp_trigger_handler(FunctionCallInfo fcinfo)
 		ereport(ERROR,
 				(errcode(ERRCODE_CONNECTION_DOES_NOT_EXIST),
 				 errmsg("could not disconnect from SPI manager")));
-
 
 	trigdata = (TriggerData *) fcinfo->context;
 
@@ -954,6 +986,16 @@ plphp_trigger_handler(FunctionCallInfo fcinfo)
 				break;
 		}
 	}
+
+	REPORT_PHP_MEMUSAGE("freeing some variables");
+
+	zval_dtor(zTrigData);
+	zval_dtor(phpret);
+
+	FREE_ZVAL(phpret);
+	FREE_ZVAL(zTrigData);
+
+	REPORT_PHP_MEMUSAGE("trigger call done");
 
 	return retval;
 }
@@ -1511,22 +1553,31 @@ plphp_call_php_trig(plphp_proc_desc *desc, FunctionCallInfo fcinfo,
 					zval *trigdata)
 {
 	zval	   *retval;
+	zval	   *funcname;
 	char		call[64];
+	zval	  **params[1];
 
-	MAKE_STD_ZVAL(retval);
-	retval->type = IS_NULL;
+	sprintf(call, "plphp_proc_%u_trigger", fcinfo->flinfo->fn_oid);
+	params[0] = &trigdata;
 
-	ZEND_SET_SYMBOL(EG(active_symbol_table), "_trigargs", trigdata);
-	sprintf(call, "plphp_proc_%u_trigger(&$_trigargs);",
-			fcinfo->flinfo->fn_oid);
+	MAKE_STD_ZVAL(funcname);
+	ZVAL_STRING(funcname, call, 0);
 
-	if (zend_eval_string(call, retval, "plphp trigger call"
-						 TSRMLS_CC) == FAILURE)
-	{
-		/* The next compilation will blow it up */
-		desc->fn_xmin = InvalidTransactionId;
-		elog(ERROR, "plphp: trigger call - failure");
-	}
+	/*
+	 * HACK: mark trigdata as a reference, so it won't be copied in
+	 * call_user_function_ex.  This way the user function will be able to 
+	 * modify it, in order to change NEW.
+	 */
+	trigdata->is_ref = 1;
+
+	if (call_user_function_ex(EG(function_table), NULL, funcname, &retval,
+							  1, params, 1, NULL TSRMLS_CC) == FAILURE)
+		elog(ERROR, "could not call function \"%s\"", call);
+
+	FREE_ZVAL(funcname);
+
+	/* Return to the original state */
+	trigdata->is_ref = 0;
 
 	return retval;
 }
@@ -1613,7 +1664,7 @@ plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc)
  */
 void
 plphp_error_cb(int type, const char *filename, const uint lineno,
-					const char *fmt, va_list args)
+	   		   const char *fmt, va_list args)
 {
 	char	str[1024];
 	int		elevel;
@@ -1653,6 +1704,8 @@ plphp_error_cb(int type, const char *filename, const uint lineno,
 			elevel = ERROR;
 			break;
 	}
+
+	REPORT_PHP_MEMUSAGE("reporting error");
 
 	/*
 	 * If this is a severe problem, we need to make PHP aware of it, so first

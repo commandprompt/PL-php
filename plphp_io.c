@@ -229,8 +229,8 @@ plphp_array_get_elem(zval *array, char *key)
  * zval_get_cstring
  *		Get a C-string representation of a zval.
  *
- * All return values are palloc'ed in the current memory context and must be
- * freed by the caller, except NULL values.
+ * All return values, except those that are NULL, are palloc'ed in the current
+ * memory context and must be freed by the caller.
  *
  * If the do_array parameter is false, then array values will not be converted
  * and an error will be raised instead.
