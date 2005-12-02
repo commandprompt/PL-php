@@ -71,6 +71,9 @@ zend_function_entry spi_functions[] =
  *
  * Receives one or two arguments.  The mandatory first argument is the query
  * text.  The optional second argument is the tuple limit.
+ *
+ * Note that just like PL/Perl, we start a subtransaction before invoking the
+ * SPI call, and automatically roll it back if the call fails.
  */
 ZEND_FUNCTION(spi_exec)
 {
@@ -175,6 +178,8 @@ ZEND_FUNCTION(spi_exec)
 	SPIres->SPI_processed = SPI_processed;
 	if (status == SPI_OK_SELECT)
 		SPIres->SPI_tuptable = SPI_tuptable;
+	else
+		SPIres->SPI_tuptable = NULL;
 	SPIres->current_row = 0;
 	SPIres->status = status;
 
@@ -249,9 +254,12 @@ ZEND_FUNCTION(spi_fetch_row)
 		RETURN_FALSE;
 
 	REPORT_PHP_MEMUSAGE("spi_fetch_row: finish");
-
 }
 
+/*
+ * spi_processed
+ * 		Return the number of tuples returned in a spi_exec call.
+ */
 ZEND_FUNCTION(spi_processed)
 {
 	zval	   **z_spi = NULL;
@@ -283,6 +291,10 @@ ZEND_FUNCTION(spi_processed)
 	RETURN_LONG(SPIres->SPI_processed);
 }
 
+/*
+ * spi_status
+ * 		Return the status returned by a previous spi_exec call, as a string.
+ */
 ZEND_FUNCTION(spi_status)
 {
 	zval	   **z_spi = NULL;
@@ -314,6 +326,11 @@ ZEND_FUNCTION(spi_status)
 	RETURN_STRING(SPI_result_code_string(SPIres->status), true);
 }
 
+/*
+ * spi_rewind
+ * 		Resets the internal counter for spi_fetch_row, so the next
+ * 		spi_fetch_row call will start fetching from the beginning.
+ */
 ZEND_FUNCTION(spi_rewind)
 {
 	zval	   **z_spi = NULL;
@@ -381,12 +398,21 @@ ZEND_FUNCTION(pg_raise)
 	zend_error(elevel, message);
 }
 
+/*
+ * php_SPIresult_destroy
+ * 		Free the resources allocated by a spi_exec call.
+ *
+ * This is automatically called when the resource goes out of scope
+ * or is overwritten by another resource.
+ */
 void
 php_SPIresult_destroy(zend_rsrc_list_entry *rsrc TSRMLS_DC)
 {
 	php_SPIresult *res = (php_SPIresult *) rsrc->ptr;
 
-	SPI_freetuptable(res->SPI_tuptable);
+	if (res->SPI_tuptable != NULL)
+		SPI_freetuptable(res->SPI_tuptable);
+
 	free(res);
 }
 
