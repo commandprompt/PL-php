@@ -130,3 +130,40 @@ FOR EACH ROW EXECUTE PROCEDURE test_rel();
 
 INSERT INTO test_rel values ('foo', '0');
 SELECT tbl = 'test_rel', relid = 'test_rel'::regclass FROM test_rel;
+
+
+-- Test consistency checks in $_TD
+
+create table foo (foo_id int primary key, descrip text not null);
+
+create or replace function foo_trig() returns trigger
+language plphp as $$
+	$_TD = 1;
+	return 'MODIFY';
+$$;
+
+create trigger foo before insert on foo
+for each row execute procedure foo_trig();
+
+insert into foo values (1, 'one');
+
+create or replace function foo_trig() returns trigger
+language plphp as $$
+	$_TD = array();
+	return 'MODIFY';
+$$;
+insert into foo values (1, 'one');
+
+create or replace function foo_trig() returns trigger
+language plphp as $$
+	$_TD = array('new' => 1);
+	return 'MODIFY';
+$$;
+insert into foo values (1, 'one');
+
+create or replace function foo_trig() returns trigger
+language plphp as $$
+	$_TD = array('new' => array());
+	return 'MODIFY';
+$$;
+insert into foo values (1, 'one');

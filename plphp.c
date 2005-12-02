@@ -416,7 +416,6 @@ plphp_init(void)
 			/* Init procedure cache */
 			MAKE_STD_ZVAL(plphp_proc_array);
 			array_init(plphp_proc_array);
-			plphp_first_call = false;
 
 			zend_register_functions(
 #if PHP_MAJOR_VERSION == 5
@@ -708,7 +707,8 @@ plphp_get_function_tupdesc(Oid result_type, Node *rsinfo)
  * by the caller.
  *
  * XXX Possible optimization: make this a global context that is not deleted,
- * but only reset each time this function is called.
+ * but only reset each time this function is called.  (Think about triggers
+ * calling other triggers though).
  */
 static HeapTuple
 plphp_modify_tuple(zval *outdata, TriggerData *tdata)
@@ -749,7 +749,7 @@ plphp_modify_tuple(zval *outdata, TriggerData *tdata)
 
 	if (tupdesc->natts > i)
 		ereport(ERROR,
-				(errmsg("incorrect number of keys in $_TD['new']"),
+				(errmsg("insufficient number of keys in $_TD['new']"),
 				 errdetail("At least %d expected, %d found.",
 						   tupdesc->natts, i)));
 
@@ -934,6 +934,9 @@ plphp_trigger_handler(FunctionCallInfo fcinfo)
 
 	trigdata = (TriggerData *) fcinfo->context;
 
+	if (zTrigData->type != IS_ARRAY)
+		elog(ERROR, "$_TD is not an array");
+			 
 	/*
 	 * In a BEFORE trigger, compute the return value.  In an AFTER trigger
 	 * it'll be ignored, so don't bother.
@@ -958,18 +961,18 @@ plphp_trigger_handler(FunctionCallInfo fcinfo)
 						retval = PointerGetDatum(plphp_modify_tuple(zTrigData,
 																	trigdata));
 					else if (TRIGGER_FIRED_BY_DELETE(trigdata->tg_event))
-					{
-						/* do nothing */;
-						elog(WARNING,
-							 "ignoring modified tuple in DELETE trigger");
-					}
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("on delete trigger can not modify the "
+										"the return tuple")));
 					else
 						elog(ERROR, "unknown event in trigger function");
 				}
 				else
-					elog(ERROR,
-							   "expected trigger function to return NULL, "
-							   "'SKIP' or 'MODIFY'");
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("expected trigger function to return "
+									"NULL, 'SKIP' or 'MODIFY'")));
 				break;
 			case IS_NULL:
 				if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
@@ -980,9 +983,10 @@ plphp_trigger_handler(FunctionCallInfo fcinfo)
 					retval = (Datum) trigdata->tg_trigtuple;
 				break;
 			default:
-				elog(ERROR,
-						   "expected trigger function to return NULL, "
-						   "'SKIP' or 'MODIFY'");
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("expected trigger function to return "
+								"NULL, 'SKIP' or 'MODIFY'")));
 				break;
 		}
 	}
@@ -1012,13 +1016,19 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 	Datum		retval;
 	char	   *retvalbuffer = NULL;
 
+	REPORT_PHP_MEMUSAGE("starting user function call");
+
 	/* Find or compile the function */
 	desc = plphp_compile_function(fcinfo->flinfo->fn_oid, false);
+
+	REPORT_PHP_MEMUSAGE("function compiled");
 
 	PG(safe_mode) = desc->lanpltrusted;
 
 	/* Call the PHP function. */
 	phpret = plphp_call_php_func(desc, fcinfo);
+
+	REPORT_PHP_MEMUSAGE("function invoked");
 
 	/* Basic datatype checks */
 	if ((desc->ret_type & PL_ARRAY) && (phpret->type != IS_ARRAY))
@@ -1117,6 +1127,9 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 							   Int32GetDatum(-1));
 		pfree(retvalbuffer);
 	}
+
+	REPORT_PHP_MEMUSAGE("finished calling user function");
+
 	return retval;
 }
 
@@ -1516,28 +1529,44 @@ plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 	zval	   *retval;
 	zval	   *args;
 	zval	   *argc;
+	zval	   *funcname;
+	zval	  **params[2];
 	char		call[64];
 
-	MAKE_STD_ZVAL(retval);
-	array_init(retval);
+	sprintf(call, "plphp_proc_%u", fcinfo->flinfo->fn_oid);
+
+	REPORT_PHP_MEMUSAGE("going to build function args");
 
 	args = plphp_func_build_args(desc, fcinfo);
+
+	REPORT_PHP_MEMUSAGE("args built. Now the rest ...");
 
 	MAKE_STD_ZVAL(argc);
 	ZVAL_LONG(argc, desc->nargs);
 
-	ZEND_SET_SYMBOL(EG(active_symbol_table), "_args_int", args);
-	ZEND_SET_SYMBOL(EG(active_symbol_table), "_argc_int", argc);
-	sprintf(call, "plphp_proc_%u($_args_int, $_argc_int);",
-			fcinfo->flinfo->fn_oid);
+	params[0] = &args;
+	params[1] = &argc;
 
-	if (zend_eval_string(call, retval, desc->proname
-						 TSRMLS_CC) == FAILURE)
-	{
-		/* The next compilation will blow it up */
-		desc->fn_xmin = InvalidTransactionId;
-		elog(ERROR, "plphp: function call - failure");
-	}
+	MAKE_STD_ZVAL(funcname);
+	ZVAL_STRING(funcname, call, 0);
+
+	REPORT_PHP_MEMUSAGE("going to call the function");
+
+	if (call_user_function_ex(EG(function_table), NULL, funcname, &retval,
+							  2, params, 1, NULL TSRMLS_CC) == FAILURE)
+		elog(ERROR, "could not call function \"%s\"", call);
+
+	REPORT_PHP_MEMUSAGE("going to free some vars");
+
+	FREE_ZVAL(funcname);
+
+	zval_dtor(args);
+	FREE_ZVAL(args);
+
+	zval_dtor(argc);
+	FREE_ZVAL(argc);
+
+	REPORT_PHP_MEMUSAGE("function call done");
 
 	return retval;
 }

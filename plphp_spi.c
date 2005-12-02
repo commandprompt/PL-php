@@ -37,6 +37,15 @@
 /* PHP stuff */
 #include "php.h"
 
+#undef DEBUG_PLPHP_MEMORY
+
+#ifdef DEBUG_PLPHP_MEMORY
+#define REPORT_PHP_MEMUSAGE(where) \
+	elog(NOTICE, "PHP mem usage: «%s»: %u", where, AG(allocated_memory));
+#else
+#define REPORT_PHP_MEMUSAGE(a) 
+#endif
+
 /* resource type Id for SPIresult */
 int SPIres_rtype;
 
@@ -73,6 +82,8 @@ ZEND_FUNCTION(spi_exec)
 	int			spi_id;
 	MemoryContext oldcontext = CurrentMemoryContext;
 	ResourceOwner oldowner = CurrentResourceOwner;
+
+	REPORT_PHP_MEMUSAGE("spi_exec called");
 
 	if ((ZEND_NUM_ARGS() > 2) || (ZEND_NUM_ARGS() < 1))
 		WRONG_PARAM_COUNT;
@@ -167,9 +178,13 @@ ZEND_FUNCTION(spi_exec)
 	SPIres->current_row = 0;
 	SPIres->status = status;
 
+	REPORT_PHP_MEMUSAGE("spi_exec: creating resource");
+
 	/* Register the resource to PHP so it will be able to free it */
 	spi_id = ZEND_REGISTER_RESOURCE(return_value, (void *) SPIres,
 					 				SPIres_rtype);
+
+	REPORT_PHP_MEMUSAGE("spi_exec: returning");
 
 	RETURN_RESOURCE(spi_id);
 }
@@ -189,6 +204,8 @@ ZEND_FUNCTION(spi_fetch_row)
 	zval	   *row = NULL;
 	zval	  **z_spi = NULL;
 	php_SPIresult	*SPIres;
+
+	REPORT_PHP_MEMUSAGE("spi_fetch_row: called");
 
 	if (ZEND_NUM_ARGS() != 1)
 		WRONG_PARAM_COUNT;
@@ -225,9 +242,13 @@ ZEND_FUNCTION(spi_fetch_row)
 
 		zval_copy_ctor(return_value);
 		zval_dtor(row);
+		FREE_ZVAL(row);
+
 	}
 	else
 		RETURN_FALSE;
+
+	REPORT_PHP_MEMUSAGE("spi_fetch_row: finish");
 
 }
 
@@ -235,6 +256,8 @@ ZEND_FUNCTION(spi_processed)
 {
 	zval	   **z_spi = NULL;
 	php_SPIresult	*SPIres;
+
+	REPORT_PHP_MEMUSAGE("spi_processed: start");
 
 	if (ZEND_NUM_ARGS() != 1)
 		WRONG_PARAM_COUNT;
@@ -254,6 +277,8 @@ ZEND_FUNCTION(spi_processed)
 
 	ZEND_FETCH_RESOURCE(SPIres, php_SPIresult *, z_spi, -1, "SPI result",
 						SPIres_rtype);
+
+	REPORT_PHP_MEMUSAGE("spi_processed: finish");
 
 	RETURN_LONG(SPIres->SPI_processed);
 }
@@ -263,6 +288,8 @@ ZEND_FUNCTION(spi_status)
 	zval	   **z_spi = NULL;
 	php_SPIresult	*SPIres;
 
+	REPORT_PHP_MEMUSAGE("spi_status: start");
+
 	if (ZEND_NUM_ARGS() != 1)
 		WRONG_PARAM_COUNT;
 
@@ -281,6 +308,8 @@ ZEND_FUNCTION(spi_status)
 
 	ZEND_FETCH_RESOURCE(SPIres, php_SPIresult *, z_spi, -1, "SPI result",
 						SPIres_rtype);
+
+	REPORT_PHP_MEMUSAGE("spi_status: finish");
 
 	RETURN_STRING(SPI_result_code_string(SPIres->status), true);
 }

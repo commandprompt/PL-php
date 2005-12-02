@@ -101,7 +101,7 @@ CREATE OR REPLACE FUNCTION trigfunc_test1() RETURNS trigger LANGUAGE plphp AS $$
 	return 'MODIFY';
 $$;
 INSERT INTO trigfunc_test1 VALUES (1);
-ERROR:  incorrect number of keys in $_TD['new']
+ERROR:  insufficient number of keys in $_TD['new']
 DETAIL:  At least 1 expected, 0 found.
 -- Make "b" a literal of an incorrect type
 CREATE OR REPLACE FUNCTION trigfunc_test1() RETURNS trigger LANGUAGE plphp AS $$
@@ -165,3 +165,37 @@ SELECT tbl = 'test_rel', relid = 'test_rel'::regclass FROM test_rel;
  t        | t
 (1 row)
 
+-- Test consistency checks in $_TD
+create table foo (foo_id int primary key, descrip text not null);
+NOTICE:  CREATE TABLE / PRIMARY KEY will create implicit index "foo_pkey" for table "foo"
+create or replace function foo_trig() returns trigger
+language plphp as $$
+	$_TD = 1;
+	return 'MODIFY';
+$$;
+create trigger foo before insert on foo
+for each row execute procedure foo_trig();
+insert into foo values (1, 'one');
+ERROR:  $_TD is not an array
+create or replace function foo_trig() returns trigger
+language plphp as $$
+	$_TD = array();
+	return 'MODIFY';
+$$;
+insert into foo values (1, 'one');
+ERROR:  $_TD['new'] not found
+create or replace function foo_trig() returns trigger
+language plphp as $$
+	$_TD = array('new' => 1);
+	return 'MODIFY';
+$$;
+insert into foo values (1, 'one');
+ERROR:  $_TD['new'] must be an array
+create or replace function foo_trig() returns trigger
+language plphp as $$
+	$_TD = array('new' => array());
+	return 'MODIFY';
+$$;
+insert into foo values (1, 'one');
+ERROR:  insufficient number of keys in $_TD['new']
+DETAIL:  At least 2 expected, 0 found.
