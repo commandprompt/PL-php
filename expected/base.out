@@ -288,3 +288,38 @@ language plphp as $$
 $$;
 select foo(1);
 ERROR:  function declared to return array must return an array
+-- test recursive functions
+create function php_fib(int) returns int language plphp as $$
+  if ($args[0] <= 1) { return 1; }
+  $r = spi_exec("select php_fib(${args[0]} - 1) as a");
+  $row = spi_fetch_row($r);
+  $a = $row['a'];
+  $r = spi_exec("select php_fib(${args[0]} - 2) as b");
+  $row = spi_fetch_row($r);
+  $b = $row['b'];
+  return $a + $b;
+$$;
+select php_fib(1);
+ php_fib 
+---------
+       1
+(1 row)
+
+select php_fib(3);
+ php_fib 
+---------
+       3
+(1 row)
+
+select php_fib(5);
+ php_fib 
+---------
+       8
+(1 row)
+
+select php_fib(7);
+ php_fib 
+---------
+      21
+(1 row)
+
