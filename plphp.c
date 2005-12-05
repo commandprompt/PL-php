@@ -173,6 +173,9 @@ typedef enum pl_type
  *
  * "proname" is the name of the function, given by the user.
  *
+ * symbol_table is a PHP hash table used for keeping the PHP variables used
+ * in the function.  This is to avoid having to memory-collect each one.
+ *
  * fn_xmin and fn_xmin are used to know when a function has been redefined and
  * needs to be recompiled.
  *
@@ -186,6 +189,7 @@ typedef enum pl_type
 typedef struct plphp_proc_desc
 {
 	char	   *proname;
+	HashTable  *symbol_table;
 	TransactionId fn_xmin;
 	CommandId	fn_cmin;
 	bool		trusted;
@@ -1194,6 +1198,9 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 		/* We need to delete the old entry */
 		if (!uptodate)
 		{
+			if (prodesc->symbol_table != NULL)
+				zend_hash_destroy(prodesc->symbol_table);
+
 			/*
 			 * FIXME -- use a per-function memory context and fix this
 			 * stuff for good
@@ -1221,15 +1228,28 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 		 */
 		prodesc = (plphp_proc_desc *) malloc(sizeof(plphp_proc_desc));
 		if (!prodesc)
-			elog(ERROR, "out of memory");
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("out of memory")));
 
 		MemSet(prodesc, 0, sizeof(plphp_proc_desc));
 		prodesc->proname = strdup(internal_proname);
 		if (!prodesc->proname)
-			elog(ERROR, "out of memory");
+		{
+			free(prodesc);
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("out of memory")));
+		}
 
 		prodesc->fn_xmin = HeapTupleHeaderGetXmin(procTup->t_data);
 		prodesc->fn_cmin = HeapTupleHeaderGetCmin(procTup->t_data);
+
+		/*
+		 * Create the symbol table
+		 */
+		ALLOC_HASHTABLE(prodesc->symbol_table);
+		zend_hash_init(prodesc->symbol_table, 0, NULL, ZVAL_PTR_DTOR, 0);
 
 		/*
 		 * Look up the pg_language tuple by Oid
@@ -1504,6 +1524,10 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 									 fcinfo->arg[i],
 									 ObjectIdGetDatum(desc->arg_typioparam[i]),
 									 Int32GetDatum(-1)));
+				/*
+				 * FIXME -- this is bogus.  Not every value starting with { is
+				 * an array.  Figure out a better method for detecting arrays.
+				 */
 				if (tmp[0] == '{')
 				{
 					zval	   *hashref;
@@ -1542,25 +1566,39 @@ plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 	zval	   *funcname;
 	zval	  **params[2];
 	char		call[64];
-
-	sprintf(call, "plphp_proc_%u", fcinfo->flinfo->fn_oid);
+	HashTable  *orig_symbol_table;
 
 	REPORT_PHP_MEMUSAGE("going to build function args");
 
+	/*
+	 * Build the function arguments.  Save a pointer to each new zval in our
+	 * private symbol table, so that we can clean up easily later.
+	 */
 	args = plphp_func_build_args(desc, fcinfo);
+	zend_hash_update(desc->symbol_table, "args", strlen("args") + 1,
+					 (void *) &args, sizeof(zval *), NULL);
 
 	REPORT_PHP_MEMUSAGE("args built. Now the rest ...");
 
 	MAKE_STD_ZVAL(argc);
 	ZVAL_LONG(argc, desc->nargs);
+	zend_hash_update(desc->symbol_table, "argc", strlen("argc") + 1,
+					 (void *) &args, sizeof(zval *), NULL);
 
 	params[0] = &args;
 	params[1] = &argc;
 
+	/* Build the internal function name, and save for later cleaning */
+	sprintf(call, "plphp_proc_%u", fcinfo->flinfo->fn_oid);
 	MAKE_STD_ZVAL(funcname);
-	ZVAL_STRING(funcname, call, 0);
+	ZVAL_STRING(funcname, call, 1);
+	zend_hash_update(desc->symbol_table, "funcname", strlen("funcname") + 1,
+					 (void *) &args, sizeof(zval *), NULL);
 
 	REPORT_PHP_MEMUSAGE("going to call the function");
+
+	orig_symbol_table = EG(active_symbol_table);
+	EG(active_symbol_table) = desc->symbol_table;
 
 	if (call_user_function_ex(EG(function_table), NULL, funcname, &retval,
 							  2, params, 1, NULL TSRMLS_CC) == FAILURE)
@@ -1568,13 +1606,9 @@ plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 
 	REPORT_PHP_MEMUSAGE("going to free some vars");
 
-	FREE_ZVAL(funcname);
-
-	zval_dtor(args);
-	FREE_ZVAL(args);
-
-	zval_dtor(argc);
-	FREE_ZVAL(argc);
+	/* Return to the original symbol table, and clean our private one */
+	EG(active_symbol_table) = orig_symbol_table;
+	zend_hash_clean(desc->symbol_table);
 
 	REPORT_PHP_MEMUSAGE("function call done");
 
@@ -1583,9 +1617,11 @@ plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 
 /*
  * plphp_call_php_trig
- *
  * 		Build trigger argument array and call the PHP function as a
  * 		trigger.
+ *
+ * Note we don't need to change the symbol table here like we do in
+ * plphp_call_php_func, because we do manual cleaning of each zval used.
  */
 static zval *
 plphp_call_php_trig(plphp_proc_desc *desc, FunctionCallInfo fcinfo,
@@ -1596,9 +1632,10 @@ plphp_call_php_trig(plphp_proc_desc *desc, FunctionCallInfo fcinfo,
 	char		call[64];
 	zval	  **params[1];
 
-	sprintf(call, "plphp_proc_%u_trigger", fcinfo->flinfo->fn_oid);
 	params[0] = &trigdata;
 
+	/* Build the internal function name, and save for later cleaning */
+	sprintf(call, "plphp_proc_%u_trigger", fcinfo->flinfo->fn_oid);
 	MAKE_STD_ZVAL(funcname);
 	ZVAL_STRING(funcname, call, 0);
 
