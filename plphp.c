@@ -169,7 +169,17 @@ typedef enum pl_type
 } pl_type;
 
 /*
- * The information we cache about loaded procedures
+ * The information we cache about loaded procedures.
+ *
+ * "proname" is the name of the function, given by the user.
+ *
+ * fn_xmin and fn_xmin are used to know when a function has been redefined and
+ * needs to be recompiled.
+ *
+ * trusted indicates whether the function was created with a trusted handler.
+ *
+ * ret_type is a weird bitmask that indicates whether this function returns a
+ * tuple, an array or a pseudotype.  ret_oid is the Oid of the return type.
  *
  * XXX -- maybe this thing needs to be rethought.
  */
@@ -178,7 +188,7 @@ typedef struct plphp_proc_desc
 	char	   *proname;
 	TransactionId fn_xmin;
 	CommandId	fn_cmin;
-	bool		lanpltrusted;
+	bool		trusted;
 	pl_type		ret_type;
 	Oid			ret_oid;		/* Oid of returning type */
 	FmgrInfo	result_in_func;
@@ -908,7 +918,7 @@ plphp_trigger_handler(FunctionCallInfo fcinfo)
 	REPORT_PHP_MEMUSAGE("going to compile trigger function");
 	desc = plphp_compile_function(fcinfo->flinfo->fn_oid, true);
 
-	PG(safe_mode) = desc->lanpltrusted;
+	PG(safe_mode) = desc->trusted;
 
 	REPORT_PHP_MEMUSAGE("going to build the trigger arg");
 
@@ -1023,7 +1033,7 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 
 	REPORT_PHP_MEMUSAGE("function compiled");
 
-	PG(safe_mode) = desc->lanpltrusted;
+	PG(safe_mode) = desc->trusted;
 
 	/* Call the PHP function. */
 	phpret = plphp_call_php_func(desc, fcinfo);
@@ -1235,7 +1245,7 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 					   procStruct->prolang);
 		}
 		langStruct = (Form_pg_language) GETSTRUCT(langTup);
-		prodesc->lanpltrusted = langStruct->lanpltrusted;
+		prodesc->trusted = langStruct->lanpltrusted;
 		ReleaseSysCache(langTup);
 
 		/*
