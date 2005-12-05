@@ -486,7 +486,6 @@ plphp_init(void)
 															 "SPI result",
 															 0);
 
-
 			/* Ok, we're done */
 			plphp_first_call = false;
 		}
