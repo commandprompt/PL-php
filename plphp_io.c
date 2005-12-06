@@ -98,6 +98,64 @@ plphp_htup_from_zval(zval *val, TupleDesc tupdesc)
 	return ret;
 }
 
+
+/* plphp_srf_htup_from_zval
+ * 		Build a tuple from a zval and a TupleDesc, for a SRF.
+ *
+ * Like above, but we don't use the names of the array attributes;
+ * rather we build the tuple in order.  Also, we get a MemoryContext
+ * from the caller and just clean it at return, rather than building it each
+ * time.
+ */
+HeapTuple
+plphp_srf_htup_from_zval(zval *val, AttInMetadata *attinmeta,
+						 MemoryContext cxt)
+{
+	MemoryContext	oldcxt;
+	HeapTuple		ret;
+	HashPosition	pos;
+	char		  **values;
+	zval		  **element;
+	int				i = 0;
+
+	oldcxt = MemoryContextSwitchTo(cxt);
+
+	values = (char **) palloc(attinmeta->tupdesc->natts * sizeof(char *));
+
+	/*
+	 * If the input zval is an array, build a tuple using each element.
+	 * If it is a scalar, try to use it is as an element directly.
+	 */
+	if (Z_TYPE_P(val) == IS_ARRAY)
+	{
+		for (zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(val), &pos);
+			 zend_hash_get_current_data_ex(Z_ARRVAL_P(val),
+										   (void **) &element,
+										   &pos) == SUCCESS;
+			 zend_hash_move_forward_ex(Z_ARRVAL_P(val), &pos))
+		{
+			values[i++] = plphp_zval_get_cstring(element[0], true, true);
+		}
+	}
+	else
+	{
+		if (attinmeta->tupdesc->natts != 1)
+			ereport(ERROR,
+					(errmsg("returned array does not correspond to "
+							"declared return value")));
+
+		values[0] = plphp_zval_get_cstring(val, true, true);
+	}
+
+	MemoryContextSwitchTo(oldcxt);
+
+	ret = BuildTupleFromCStrings(attinmeta, values);
+
+	MemoryContextReset(cxt);
+
+	return ret;
+}
+
 /*
  * plphp_convert_to_pg_array
  * 		Convert a zval into a Postgres text array representation.

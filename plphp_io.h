@@ -8,6 +8,7 @@
 /* PostgreSQL stuff */
 #include "postgres.h"
 #include "access/heapam.h"
+#include "funcapi.h"
 
 /*
  * These are defined again in php.h, so undef them to avoid some
@@ -25,6 +26,8 @@
 
 zval *plphp_zval_from_tuple(HeapTuple tuple, TupleDesc tupdesc);
 HeapTuple plphp_htup_from_zval(zval *val, TupleDesc tupdesc);
+HeapTuple plphp_srf_htup_from_zval(zval *val, AttInMetadata *attinmeta,
+						 MemoryContext cxt);
 char *plphp_convert_to_pg_array(zval *array);
 zval *plphp_convert_from_pg_array(char *input);
 zval *plphp_array_get_elem(zval* array, char *key);

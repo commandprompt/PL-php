@@ -37,6 +37,9 @@
 /* PHP stuff */
 #include "php.h"
 
+/* PostgreSQL stuff */
+#include "miscadmin.h"
+
 #undef DEBUG_PLPHP_MEMORY
 
 #ifdef DEBUG_PLPHP_MEMORY
@@ -58,8 +61,17 @@ zend_function_entry spi_functions[] =
 	ZEND_FE(spi_status, NULL)
 	ZEND_FE(spi_rewind, NULL)
 	ZEND_FE(pg_raise, NULL)
+	ZEND_FE(return_next, NULL)
 	{NULL, NULL, NULL}
 };
+
+/* SRF support: */
+FunctionCallInfo current_fcinfo = NULL;
+TupleDesc current_tupledesc = NULL;
+AttInMetadata *current_attinmeta = NULL;
+MemoryContext current_memcxt = NULL;
+Tuplestorestate *current_tuplestore = NULL;
+
 
 /*
  * spi_exec
@@ -323,7 +335,12 @@ ZEND_FUNCTION(spi_status)
 
 	REPORT_PHP_MEMUSAGE("spi_status: finish");
 
-	RETURN_STRING(SPI_result_code_string(SPIres->status), true);
+	/*
+	 * XXX The cast is wrong, but we use it to prevent a compiler warning.
+	 * Note that the second parameter to RETURN_STRING is "duplicate", so
+	 * we are returning a copy of the string anyway.
+	 */
+	RETURN_STRING((char *) SPI_result_code_string(SPIres->status), true);
 }
 
 /*
@@ -396,6 +413,52 @@ ZEND_FUNCTION(pg_raise)
 		zend_error(E_ERROR, "incorrect log level");
 
 	zend_error(elevel, message);
+}
+
+/*
+ * return_next
+ * 		Add a tuple to the current tuplestore
+ */
+ZEND_FUNCTION(return_next)
+{
+	FunctionCallInfo fcinfo = current_fcinfo;
+	TupleDesc	tupdesc = current_tupledesc;
+	MemoryContext	oldcxt;
+	zval	   *param;
+	HeapTuple	tup;
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+
+	Assert(fcinfo != NULL);
+	Assert(tupdesc != NULL);
+	Assert(rsi != NULL);
+
+	if (ZEND_NUM_ARGS() != 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("wrong number of arguments to %s", "return_next")));
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z",
+							  &param) == FAILURE)
+	{
+		zend_error(E_WARNING, "cannot parse parameters in %s",
+				   get_active_function_name(TSRMLS_C));
+	}
+
+	/* Use the per-query context so that the tuplestore survives */
+	oldcxt = MemoryContextSwitchTo(rsi->econtext->ecxt_per_query_memory);
+
+	/* Form the tuple */
+	tup = plphp_srf_htup_from_zval(param, current_attinmeta, current_memcxt);
+
+	/* First call?  Create the tuplestore. */
+	if (!current_tuplestore)
+		current_tuplestore = tuplestore_begin_heap(true, false, work_mem);
+
+	/* Save the tuple and clean up */
+	tuplestore_puttuple(current_tuplestore, tup);
+	heap_freetuple(tup);
+
+	MemoryContextSwitchTo(oldcxt);
 }
 
 /*

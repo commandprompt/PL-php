@@ -5,6 +5,7 @@
 #define PLPHP_SPI_H
 
 #include "executor/spi.h"
+#include "funcapi.h"
 
 /*
  * These are defined again in php.h, so undef them to avoid some
@@ -23,6 +24,13 @@ extern int SPIres_rtype;
 /* Function table */
 extern zend_function_entry spi_functions[];
 
+/* SRF support: */
+extern FunctionCallInfo current_fcinfo;
+extern TupleDesc current_tupledesc;
+extern AttInMetadata *current_attinmeta;
+extern MemoryContext current_memcxt;
+extern Tuplestorestate *current_tuplestore;
+
 /*
  * Definition for PHP "resource" result type from SPI_execute.
  */
@@ -40,6 +48,7 @@ ZEND_FUNCTION(spi_processed);
 ZEND_FUNCTION(spi_status);
 ZEND_FUNCTION(spi_rewind);
 ZEND_FUNCTION(pg_raise);
+ZEND_FUNCTION(return_next);
 
 void php_SPIresult_destroy(zend_rsrc_list_entry *rsrc TSRMLS_DC);
 

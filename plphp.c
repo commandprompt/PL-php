@@ -1314,14 +1314,6 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 									format_type_be(procStruct->prorettype))));
 				}
 			}
-			if (procStruct->proretset)
-			{
-				free(prodesc->proname);
-				free(prodesc);
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("plphp functions cannot return sets")));
-			}
 
 			prodesc->ret_oid = procStruct->prorettype;
 			prodesc->retset = procStruct->proretset;
@@ -1555,7 +1547,78 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 static Datum
 plphp_call_php_srf(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 {
-	elog(ERROR, "not implemented yet");
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc	tupdesc;
+	zval	   *phpret;
+	MemoryContext	oldcxt;
+
+	Assert(desc->retset);
+
+	current_fcinfo = fcinfo;
+	current_tuplestore = NULL;
+
+	/*
+	 * Fetch the function's tuple descriptor.  This will return NULL in the
+	 * case of a scalar return type, in which case we will copy the TupleDesc
+	 * from the ReturnSetInfo.
+	 */
+	get_call_result_type(fcinfo, NULL, &tupdesc);
+	if (tupdesc == NULL)
+		tupdesc = rsi->expectedDesc;
+
+	/* Check context before allowing the call to go through */
+	if (!rsi || !IsA(rsi, ReturnSetInfo) ||
+		(rsi->allowedModes & SFRM_Materialize) == 0 ||
+		rsi->expectedDesc == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that "
+						"cannot accept a set")));
+
+	oldcxt = MemoryContextSwitchTo(rsi->econtext->ecxt_per_query_memory);
+
+	current_memcxt = AllocSetContextCreate(CurTransactionContext,
+										   "PL/php SRF context",
+										   ALLOCSET_DEFAULT_MINSIZE,
+										   ALLOCSET_DEFAULT_INITSIZE,
+										   ALLOCSET_DEFAULT_MAXSIZE);
+
+	current_tupledesc = CreateTupleDescCopy(tupdesc);
+	current_attinmeta = TupleDescGetAttInMetadata(current_tupledesc);
+
+	/*
+	 * Call the PHP function.  The user code must use return_next, which will
+	 * create and populate the tuplestore appropiately.
+	 */
+	phpret = plphp_call_php_func(desc, fcinfo);
+
+	/* We don't use the return value */
+	zval_dtor(phpret);
+
+	/* Close the SPI connection */
+	if (SPI_finish() != SPI_OK_FINISH)
+		ereport(ERROR,
+				(errcode(ERRCODE_CONNECTION_DOES_NOT_EXIST),
+				 errmsg("could not disconnect from SPI manager")));
+
+	/* Now prepare the return values. */
+	rsi->returnMode = SFRM_Materialize;
+
+	if (current_tuplestore)
+	{
+		rsi->setResult = current_tuplestore;
+		rsi->setDesc = current_tupledesc;
+	}
+
+	MemoryContextDelete(current_memcxt);
+	current_memcxt = NULL;
+	current_tupledesc = NULL;
+	current_attinmeta = NULL;
+
+	MemoryContextSwitchTo(oldcxt);
+
+	/* All done */
+	return (Datum) 0;
 }
 
 /*
