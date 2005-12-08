@@ -1,0 +1,212 @@
+--
+-- Test Set-returning functions
+--
+-- Test a function returning nothing
+create function retnothing() returns setof record
+language plphp as $$ ; $$;
+select * from retnothing() as a(a int);
+ a 
+---
+(0 rows)
+
+create type nothing as (a int[]);
+create function retnothing2() returns setof nothing
+language plphp as $$
+pg_raise('notice', 'hello world');
+return;
+pg_raise('error', 'fatal error');
+$$;
+select * from retnothing2();
+NOTICE:  plphp: hello world
+ a 
+---
+(0 rows)
+
+-- Return an anonymous record, resolving the type at query time
+create function retset() returns setof record
+language plphp as $$
+	return_next(array(1, 'hello'));
+	return_next(array(2, 'world'));
+	return_next(array(3, 'plphp rocks!'));
+$$;
+select * from retset() as f(a int, b text);
+ a |      b       
+---+--------------
+ 1 | hello
+ 2 | world
+ 3 | plphp rocks!
+(3 rows)
+
+-- Try a predeclared type
+create type type_foo as (a int, b text);
+create function retset2() returns setof type_foo
+language plphp as $$
+	return_next(array(1, 'hello'));
+	return_next(array(2, 'world'));
+	return_next(array(3, 'plphp rocks!'));
+$$;
+select * from retset2();
+ a |      b       
+---+--------------
+ 1 | hello
+ 2 | world
+ 3 | plphp rocks!
+(3 rows)
+
+-- Return a scalar.  Note no array() construct
+create function retset3(int, int) returns setof int
+language plphp as $$
+	for ($i = 1; $i <= $args[0]; $i++) {
+		return_next($args[1] * $i);
+	}
+$$;
+select * from retset3(10, 3);
+ retset3 
+---------
+       3
+       6
+       9
+      12
+      15
+      18
+      21
+      24
+      27
+      30
+(10 rows)
+
+-- Same as above but with array()
+create function retset4(int, int) returns setof int
+language plphp as $$
+	for ($i = 1; $i <= $args[0]; $i++) {
+		return_next(array($args[1] * $i));
+	}
+$$;
+select * from retset4(10, 3);
+ retset4 
+---------
+       3
+       6
+       9
+      12
+      15
+      18
+      21
+      24
+      27
+      30
+(10 rows)
+
+-- Do we support OUT params?
+create function retset5(out int, out int, int, int)
+language plphp as $$
+	for ($i = 1; $i <= $args[0]; $i++) {
+		return_next($args[1] * $i);
+	}
+$$;
+select * from retset5(5, 2);
+ERROR:  cannot use return_next in functions not declared to return a set
+-- Try to return setof array
+create or replace function retset6(int, int) returns setof int[]
+language plphp as $$
+	for ($i = 1; $i <= $args[0]; $i++) {
+		return_next(array(array($args[1] * $i, $i)));
+	}
+$$;
+select * from retset6(10, 2);
+  retset6  
+-----------
+ {{2,1}}
+ {{4,2}}
+ {{6,3}}
+ {{8,4}}
+ {{10,5}}
+ {{12,6}}
+ {{14,7}}
+ {{16,8}}
+ {{18,9}}
+ {{20,10}}
+(10 rows)
+
+-- What happens if we use the "avoid outer array hack" here?
+create or replace function retset7(int, int) returns setof int[]
+language plphp as $$
+	for ($i = 1; $i <= $args[0]; $i++) {
+		return_next(array($args[1] * $i, $i));
+	}
+$$;
+select * from retset7(10, 2);
+ retset7 
+---------
+ {2,1}
+ {4,2}
+ {6,3}
+ {8,4}
+ {10,5}
+ {12,6}
+ {14,7}
+ {16,8}
+ {18,9}
+ {20,10}
+(10 rows)
+
+create type dual_int_arr as (label text, a int[], b int[]);
+create or replace function retset8(int, int) returns setof dual_int_arr
+language plphp as $$
+	for ($i = 1; $i <= $args[0]; $i++) {
+		return_next(
+		array('one', array($args[1] * $i, $i),
+			array(
+				array($args[1] * $i * 2, $i * 2, $i * $i),
+				array($args[1] * $i * 3, $i * 3, $i * 4)
+			), 'foo'
+		));
+	}
+$$;
+select * from retset8(10, 2);
+WARNING:  more elements in array than attributes in return type
+WARNING:  more elements in array than attributes in return type
+WARNING:  more elements in array than attributes in return type
+WARNING:  more elements in array than attributes in return type
+WARNING:  more elements in array than attributes in return type
+WARNING:  more elements in array than attributes in return type
+WARNING:  more elements in array than attributes in return type
+WARNING:  more elements in array than attributes in return type
+WARNING:  more elements in array than attributes in return type
+WARNING:  more elements in array than attributes in return type
+ label |    a    |            b             
+-------+---------+--------------------------
+ one   | {2,1}   | {{4,2,1},{6,3,4}}
+ one   | {4,2}   | {{8,4,4},{12,6,8}}
+ one   | {6,3}   | {{12,6,9},{18,9,12}}
+ one   | {8,4}   | {{16,8,16},{24,12,16}}
+ one   | {10,5}  | {{20,10,25},{30,15,20}}
+ one   | {12,6}  | {{24,12,36},{36,18,24}}
+ one   | {14,7}  | {{28,14,49},{42,21,28}}
+ one   | {16,8}  | {{32,16,64},{48,24,32}}
+ one   | {18,9}  | {{36,18,81},{54,27,36}}
+ one   | {20,10} | {{40,20,100},{60,30,40}}
+(10 rows)
+
+create table large_table (a int);
+insert into large_table select * from generate_series(1, 10000);
+create or replace function duplicate(text, text) returns setof int
+language plphp as $$
+  $r = spi_exec("select $args[1] as a from $args[0]");
+  while ($row = spi_fetch_row($r)) {
+  	return_next($row['a'] * 2);
+  }
+$$;
+create table duplicated as select * from duplicate('large_table', 'a');
+select min(duplicate) from duplicated;
+ min 
+-----
+   2
+(1 row)
+
+select count(*) from duplicated;
+ count 
+-------
+ 10000
+(1 row)
+

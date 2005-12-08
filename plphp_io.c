@@ -14,6 +14,7 @@
 #include "executor/spi.h"
 #include "funcapi.h"
 #include "lib/stringinfo.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 
 /*
@@ -120,25 +121,62 @@ plphp_srf_htup_from_zval(zval *val, AttInMetadata *attinmeta,
 
 	oldcxt = MemoryContextSwitchTo(cxt);
 
-	values = (char **) palloc(attinmeta->tupdesc->natts * sizeof(char *));
+	/*
+	 * Use palloc0 to initialize values to NULL, just in case the user does
+	 * not pass all needed attributes
+	 */
+	values = (char **) palloc0(attinmeta->tupdesc->natts * sizeof(char *));
 
 	/*
-	 * If the input zval is an array, build a tuple using each element.
-	 * If it is a scalar, try to use it is as an element directly.
+	 * If the input zval is an array, build a tuple using each element as an
+	 * attribute.  Exception: if the return tuple has a single element and
+	 * it's an array type, use the whole array as a single value.
+	 *
+	 * If the input zval is a scalar, use it as an element directly.
 	 */
 	if (Z_TYPE_P(val) == IS_ARRAY)
 	{
-		for (zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(val), &pos);
-			 zend_hash_get_current_data_ex(Z_ARRVAL_P(val),
-										   (void **) &element,
-										   &pos) == SUCCESS;
-			 zend_hash_move_forward_ex(Z_ARRVAL_P(val), &pos))
+		if (attinmeta->tupdesc->natts == 1)
 		{
-			values[i++] = plphp_zval_get_cstring(element[0], true, true);
+			/* Is it an array? */
+			if (attinmeta->tupdesc->attrs[0]->attndims != 0 ||
+				!OidIsValid(get_element_type(attinmeta->tupdesc->attrs[0]->atttypid)))
+			{
+				zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(val), &pos);
+				zend_hash_get_current_data_ex(Z_ARRVAL_P(val),
+											  (void **) &element,
+											  &pos);
+				values[0] = plphp_zval_get_cstring(element[0], true, true);
+			}
+			else
+				values[0] = plphp_zval_get_cstring(val, true, true);
+		}
+		else
+		{
+			/*
+			 * Ok, it's an array and the return tuple has more than one
+			 * attribute, so scan each array element.
+			 */
+			for (zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(val), &pos);
+				 zend_hash_get_current_data_ex(Z_ARRVAL_P(val),
+											   (void **) &element,
+											   &pos) == SUCCESS;
+				 zend_hash_move_forward_ex(Z_ARRVAL_P(val), &pos))
+			{
+				/* avoid overrunning the palloc'ed chunk */
+				if (i >= attinmeta->tupdesc->natts)
+				{
+					elog(WARNING, "more elements in array than attributes in return type");
+					break;
+				}
+
+				values[i++] = plphp_zval_get_cstring(element[0], true, true);
+			}
 		}
 	}
 	else
 	{
+		/* The passed zval is not an array -- use as the only attribute */
 		if (attinmeta->tupdesc->natts != 1)
 			ereport(ERROR,
 					(errmsg("returned array does not correspond to "
@@ -338,6 +376,162 @@ plphp_zval_get_cstring(zval *val, bool do_array, bool null_ok)
 	}
 
 	return ret;
+}
+
+/*
+ * plphp_build_tuple_argument
+ *
+ * Build a PHP array from all attributes of a given tuple
+ */
+zval *
+plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc)
+{
+	int			i;
+	zval	   *output;
+	Datum		attr;
+	bool		isnull;
+	char	   *attname;
+	char	   *outputstr;
+	HeapTuple	typeTup;
+	Oid			typoutput;
+	Oid			typioparam;
+
+	MAKE_STD_ZVAL(output);
+	array_init(output);
+
+	for (i = 0; i < tupdesc->natts; i++)
+	{
+		/* Ignore dropped attributes */
+		if (tupdesc->attrs[i]->attisdropped)
+			continue;
+
+		/* Get the attribute name */
+		attname = tupdesc->attrs[i]->attname.data;
+
+		/* Get the attribute value */
+		attr = heap_getattr(tuple, i + 1, tupdesc, &isnull);
+
+		/* If it is null, set it to undef in the hash. */
+		if (isnull)
+		{
+			add_next_index_unset(output);
+			continue;
+		}
+
+		/*
+		 * Lookup the attribute type in the syscache for the output function
+		 */
+		typeTup = SearchSysCache(TYPEOID,
+								 ObjectIdGetDatum(tupdesc->attrs[i]->atttypid),
+								 0, 0, 0);
+		if (!HeapTupleIsValid(typeTup))
+		{
+			elog(ERROR, "cache lookup failed for type %u",
+				 tupdesc->attrs[i]->atttypid);
+		}
+
+		typoutput = ((Form_pg_type) GETSTRUCT(typeTup))->typoutput;
+		typioparam = getTypeIOParam(typeTup);
+		ReleaseSysCache(typeTup);
+
+		/* Append the attribute name and the value to the list. */
+		outputstr =
+			DatumGetCString(OidFunctionCall3(typoutput, attr,
+											 ObjectIdGetDatum(typioparam),
+											 Int32GetDatum(tupdesc->attrs[i]->atttypmod)));
+		add_assoc_string(output, attname, outputstr, 1);
+		pfree(outputstr);
+	}
+
+	return output;
+}
+
+/*
+ * plphp_modify_tuple
+ * 		Return the modified NEW tuple, for use as return value in a BEFORE
+ * 		trigger.  outdata must point to the $_TD variable from the PHP
+ * 		function.
+ *
+ * The tuple will be allocated in the current memory context and must be freed
+ * by the caller.
+ *
+ * XXX Possible optimization: make this a global context that is not deleted,
+ * but only reset each time this function is called.  (Think about triggers
+ * calling other triggers though).
+ */
+HeapTuple
+plphp_modify_tuple(zval *outdata, TriggerData *tdata)
+{
+	TupleDesc	tupdesc;
+	HeapTuple	rettuple;
+	zval	   *newtup;
+	zval	  **element;
+	char	  **vals;
+	int			i;
+	AttInMetadata *attinmeta;
+	MemoryContext tmpcxt,
+				  oldcxt;
+
+	tmpcxt = AllocSetContextCreate(CurTransactionContext,
+								   "PL/php NEW context",
+								   ALLOCSET_DEFAULT_MINSIZE,
+								   ALLOCSET_DEFAULT_INITSIZE,
+								   ALLOCSET_DEFAULT_MAXSIZE);
+
+	oldcxt = MemoryContextSwitchTo(tmpcxt);
+
+	/* Fetch "new" from $_TD */
+	if (zend_hash_find(outdata->value.ht,
+					   "new", strlen("new") + 1,
+					   (void **) &element) != SUCCESS)
+		elog(ERROR, "$_TD['new'] not found");
+
+	if (Z_TYPE_P(element[0]) != IS_ARRAY)
+		elog(ERROR, "$_TD['new'] must be an array");
+	newtup = element[0];
+
+	/* Fetch the tupledesc and metadata */
+	tupdesc = tdata->tg_relation->rd_att;
+	attinmeta = TupleDescGetAttInMetadata(tupdesc);
+
+	i = zend_hash_num_elements(Z_ARRVAL_P(newtup));
+
+	if (tupdesc->natts > i)
+		ereport(ERROR,
+				(errmsg("insufficient number of keys in $_TD['new']"),
+				 errdetail("At least %d expected, %d found.",
+						   tupdesc->natts, i)));
+
+	vals = (char **) palloc(tupdesc->natts * sizeof(char *));
+
+	/*
+	 * For each attribute in the tupledesc, get its value from newtup and put
+	 * it in an array of cstrings.
+	 */
+	for (i = 0; i < tupdesc->natts; i++)
+	{
+		zval  **element;
+		char   *attname = NameStr(tupdesc->attrs[i]->attname);
+
+		/* Fetch the attribute value from the zval */
+		if (zend_hash_find(newtup->value.ht, attname, strlen(attname) + 1,
+						   (void **) &element) != SUCCESS)
+			elog(ERROR, "$_TD['new'] does not contain attribute \"%s\"",
+				 attname);
+
+		vals[i] = plphp_zval_get_cstring(element[0], true, true);
+	}
+
+	/* Return to the original context so that the new tuple will survive */
+	MemoryContextSwitchTo(oldcxt);
+
+	/* Build the tuple */
+	rettuple = BuildTupleFromCStrings(attinmeta, vals);
+
+	/* Free the memory used */
+	MemoryContextDelete(tmpcxt);
+
+	return rettuple;
 }
 
 /*

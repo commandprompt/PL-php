@@ -421,15 +421,26 @@ ZEND_FUNCTION(pg_raise)
  */
 ZEND_FUNCTION(return_next)
 {
-	FunctionCallInfo fcinfo = current_fcinfo;
-	TupleDesc	tupdesc = current_tupledesc;
 	MemoryContext	oldcxt;
 	zval	   *param;
 	HeapTuple	tup;
-	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	ReturnSetInfo *rsi;
+	
+	/*
+	 * Disallow use of return_next inside non-SRF functions
+	 *
+	 * XXX -- this error message is incorrect in presence of IN/OUT
+	 * parameter usage.  Behave better here in the future.
+	 */
+	if (current_fcinfo == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot use return_next in functions not declared to "
+						"return a set")));
 
-	Assert(fcinfo != NULL);
-	Assert(tupdesc != NULL);
+	rsi = (ReturnSetInfo *) current_fcinfo->resultinfo;
+
+	Assert(current_tupledesc != NULL);
 	Assert(rsi != NULL);
 
 	if (ZEND_NUM_ARGS() != 1)

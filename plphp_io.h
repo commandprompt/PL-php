@@ -8,6 +8,7 @@
 /* PostgreSQL stuff */
 #include "postgres.h"
 #include "access/heapam.h"
+#include "commands/trigger.h"
 #include "funcapi.h"
 
 /*
@@ -32,5 +33,7 @@ char *plphp_convert_to_pg_array(zval *array);
 zval *plphp_convert_from_pg_array(char *input);
 zval *plphp_array_get_elem(zval* array, char *key);
 char *plphp_zval_get_cstring(zval *val, bool do_array, bool null_ok);
+zval *plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc);
+HeapTuple plphp_modify_tuple(zval *outdata, TriggerData *tdata);
 
 #endif /* PLPHP_IO_H */

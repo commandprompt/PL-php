@@ -155,7 +155,11 @@ void	   *apr_brigade_create = NULL;
 void	   *ap_rflush = NULL;
 void	   *ap_set_last_modified = NULL;
 void	   *ap_add_common_vars = NULL;
-void	   *apr_pool_userdata_get = NULL;
+void	   *apr_pool_userdata_get = NULL;	
+
+/* Used in PHP 5.1.1 */
+void	   *apr_pool_cleanup_run = NULL;
+void	   *apr_snprintf = NULL;
 
 /*
  * Return types.  Why on earth is this a bitmask?  Beats me.
@@ -231,14 +235,18 @@ Datum plphp_call_handler(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(plphp_validator);
 Datum plphp_validator(PG_FUNCTION_ARGS);
 
-static Datum plphp_func_handler(FunctionCallInfo fcinfo);
-static Datum plphp_trigger_handler(FunctionCallInfo fcinfo);
+static Datum plphp_trigger_handler(FunctionCallInfo fcinfo,
+								   plphp_proc_desc *desc);
+static Datum plphp_func_handler(FunctionCallInfo fcinfo,
+								plphp_proc_desc *desc);
+static Datum plphp_srf_handler(FunctionCallInfo fcinfo,
+						   	   plphp_proc_desc *desc);
 
-static plphp_proc_desc *plphp_compile_function(Oid, int);
-static zval *plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc);
-static zval *plphp_call_php_func(plphp_proc_desc *, FunctionCallInfo);
-static zval *plphp_call_php_trig(plphp_proc_desc *, FunctionCallInfo, zval *);
-static Datum plphp_call_php_srf(plphp_proc_desc *desc, FunctionCallInfo fcinfo);
+static plphp_proc_desc *plphp_compile_function(Oid fnoid, bool is_trigger);
+static zval *plphp_call_php_func(plphp_proc_desc *desc,
+								 FunctionCallInfo fcinfo);
+static zval *plphp_call_php_trig(plphp_proc_desc *desc,
+								 FunctionCallInfo fcinfo, zval *trigdata);
 
 static void plphp_error_cb(int type, const char *filename, const uint lineno,
 								  const char *fmt, va_list args);
@@ -537,11 +545,33 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 
 		zend_try
 		{
+			plphp_proc_desc *desc;
+
+			/* Clean up SRF state */
+			current_fcinfo = NULL;
+
 			/* Redirect to the appropiate handler */
 			if (CALLED_AS_TRIGGER(fcinfo))
-				retval = plphp_trigger_handler(fcinfo);
+			{
+				desc = plphp_compile_function(fcinfo->flinfo->fn_oid, true);
+
+				/* Activate PHP safe mode if needed */
+				PG(safe_mode) = desc->trusted;
+
+				retval = plphp_trigger_handler(fcinfo, desc);
+			}
 			else
-				retval = plphp_func_handler(fcinfo);
+			{
+				desc = plphp_compile_function(fcinfo->flinfo->fn_oid, false);
+
+				/* Activate PHP safe mode if needed */
+				PG(safe_mode) = desc->trusted;
+
+				if (desc->retset)
+					retval = plphp_srf_handler(fcinfo, desc);
+				else
+					retval = plphp_func_handler(fcinfo, desc);
+			}
 		}
 		zend_catch
 		{
@@ -709,93 +739,6 @@ plphp_get_function_tupdesc(Oid result_type, Node *rsinfo)
 		return lookup_rowtype_tupdesc(result_type, -1);
 }
 
-/*
- * plphp_modify_tuple
- * 		Return the modified NEW tuple, for use as return value in a BEFORE
- * 		trigger.  outdata must point to the $_TD variable from the PHP
- * 		function.
- *
- * The tuple will be allocated in the current memory context and must be freed
- * by the caller.
- *
- * XXX Possible optimization: make this a global context that is not deleted,
- * but only reset each time this function is called.  (Think about triggers
- * calling other triggers though).
- */
-static HeapTuple
-plphp_modify_tuple(zval *outdata, TriggerData *tdata)
-{
-	TupleDesc	tupdesc;
-	HeapTuple	rettuple;
-	zval	   *newtup;
-	zval	  **element;
-	char	  **vals;
-	int			i;
-	AttInMetadata *attinmeta;
-	MemoryContext tmpcxt,
-				  oldcxt;
-
-	tmpcxt = AllocSetContextCreate(CurTransactionContext,
-								   "PL/php NEW context",
-								   ALLOCSET_DEFAULT_MINSIZE,
-								   ALLOCSET_DEFAULT_INITSIZE,
-								   ALLOCSET_DEFAULT_MAXSIZE);
-
-	oldcxt = MemoryContextSwitchTo(tmpcxt);
-
-	/* Fetch "new" from $_TD */
-	if (zend_hash_find(outdata->value.ht,
-					   "new", strlen("new") + 1,
-					   (void **) &element) != SUCCESS)
-		elog(ERROR, "$_TD['new'] not found");
-
-	if (Z_TYPE_P(element[0]) != IS_ARRAY)
-		elog(ERROR, "$_TD['new'] must be an array");
-	newtup = element[0];
-
-	/* Fetch the tupledesc and metadata */
-	tupdesc = tdata->tg_relation->rd_att;
-	attinmeta = TupleDescGetAttInMetadata(tupdesc);
-
-	i = zend_hash_num_elements(Z_ARRVAL_P(newtup));
-
-	if (tupdesc->natts > i)
-		ereport(ERROR,
-				(errmsg("insufficient number of keys in $_TD['new']"),
-				 errdetail("At least %d expected, %d found.",
-						   tupdesc->natts, i)));
-
-	vals = (char **) palloc(tupdesc->natts * sizeof(char *));
-
-	/*
-	 * For each attribute in the tupledesc, get its value from newtup and put
-	 * it in an array of cstrings.
-	 */
-	for (i = 0; i < tupdesc->natts; i++)
-	{
-		zval  **element;
-		char   *attname = NameStr(tupdesc->attrs[i]->attname);
-
-		/* Fetch the attribute value from the zval */
-		if (zend_hash_find(newtup->value.ht, attname, strlen(attname) + 1,
-						   (void **) &element) != SUCCESS)
-			elog(ERROR, "$_TD['new'] does not contain attribute \"%s\"",
-				 attname);
-
-		vals[i] = plphp_zval_get_cstring(element[0], true, true);
-	}
-
-	/* Return to the original context so that the new tuple will survive */
-	MemoryContextSwitchTo(oldcxt);
-
-	/* Build the tuple */
-	rettuple = BuildTupleFromCStrings(attinmeta, vals);
-
-	/* Free the memory used */
-	MemoryContextDelete(tmpcxt);
-
-	return rettuple;
-}
 
 /*
  * Build the $_TD array for the trigger function.
@@ -905,22 +848,13 @@ plphp_trig_build_args(FunctionCallInfo fcinfo)
  * 		Handler for trigger function calls
  */
 static Datum
-plphp_trigger_handler(FunctionCallInfo fcinfo)
+plphp_trigger_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 {
 	Datum		retval = 0;
 	char	   *srv;
 	zval	   *phpret,
 			   *zTrigData;
 	TriggerData *trigdata;
-	plphp_proc_desc *desc;
-
-	/*
-	 * Find or compile the function
-	 */
-	REPORT_PHP_MEMUSAGE("going to compile trigger function");
-	desc = plphp_compile_function(fcinfo->flinfo->fn_oid, true);
-
-	PG(safe_mode) = desc->trusted;
 
 	REPORT_PHP_MEMUSAGE("going to build the trigger arg");
 
@@ -1021,29 +955,16 @@ plphp_trigger_handler(FunctionCallInfo fcinfo)
  * 		Handler for regular function calls
  */
 static Datum
-plphp_func_handler(FunctionCallInfo fcinfo)
+plphp_func_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 {
 	zval	   *phpret = NULL;
-	plphp_proc_desc *desc;
 	Datum		retval;
 	char	   *retvalbuffer = NULL;
 
-	REPORT_PHP_MEMUSAGE("starting user function call");
+	/* SRFs are handled separately */
+	Assert(!desc->retset);
 
-	/* Find or compile the function */
-	desc = plphp_compile_function(fcinfo->flinfo->fn_oid, false);
-
-	REPORT_PHP_MEMUSAGE("function compiled");
-
-	PG(safe_mode) = desc->trusted;
-
-	/*
-	 * Call the PHP function.  If this is a SRF, let the SRF handler manage
-	 * everything.
-	 */
-	if (desc->retset)
-		return plphp_call_php_srf(desc, fcinfo);
-
+	/* Call the PHP function.  */
 	phpret = plphp_call_php_func(desc, fcinfo);
 
 	REPORT_PHP_MEMUSAGE("function invoked");
@@ -1152,12 +1073,104 @@ plphp_func_handler(FunctionCallInfo fcinfo)
 }
 
 /*
+ * plphp_srf_handler
+ * 		Invoke a SRF
+ */
+static Datum
+plphp_srf_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc	tupdesc;
+	zval	   *phpret;
+	MemoryContext	oldcxt;
+
+	Assert(desc->retset);
+
+	current_fcinfo = fcinfo;
+	current_tuplestore = NULL;
+
+	/* Check context before allowing the call to go through */
+	if (!rsi || !IsA(rsi, ReturnSetInfo) ||
+		(rsi->allowedModes & SFRM_Materialize) == 0 ||
+		rsi->expectedDesc == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that "
+						"cannot accept a set")));
+
+	/*
+	 * Fetch the function's tuple descriptor.  This will return NULL in the
+	 * case of a scalar return type, in which case we will copy the TupleDesc
+	 * from the ReturnSetInfo.
+	 */
+	get_call_result_type(fcinfo, NULL, &tupdesc);
+	if (tupdesc == NULL)
+		tupdesc = rsi->expectedDesc;
+
+	/*
+	 * If the expectedDesc is NULL, bail out, because most likely it's using
+	 * IN/OUT parameters.
+	 */
+	if (tupdesc == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot use IN/OUT parameters in PL/php")));
+
+	oldcxt = MemoryContextSwitchTo(rsi->econtext->ecxt_per_query_memory);
+
+	/* This context is reset once per row in return_next */
+	current_memcxt = AllocSetContextCreate(CurTransactionContext,
+										   "PL/php SRF context",
+										   ALLOCSET_DEFAULT_MINSIZE,
+										   ALLOCSET_DEFAULT_INITSIZE,
+										   ALLOCSET_DEFAULT_MAXSIZE);
+
+	/* Tuple descriptor and AttInMetadata for return_next */
+	current_tupledesc = CreateTupleDescCopy(tupdesc);
+	current_attinmeta = TupleDescGetAttInMetadata(current_tupledesc);
+
+	/*
+	 * Call the PHP function.  The user code must call return_next, which will
+	 * create and populate the tuplestore appropiately.
+	 */
+	phpret = plphp_call_php_func(desc, fcinfo);
+
+	/* We don't use the return value */
+	zval_dtor(phpret);
+
+	/* Close the SPI connection */
+	if (SPI_finish() != SPI_OK_FINISH)
+		ereport(ERROR,
+				(errcode(ERRCODE_CONNECTION_DOES_NOT_EXIST),
+				 errmsg("could not disconnect from SPI manager")));
+
+	/* Now prepare the return values. */
+	rsi->returnMode = SFRM_Materialize;
+
+	if (current_tuplestore)
+	{
+		rsi->setResult = current_tuplestore;
+		rsi->setDesc = current_tupledesc;
+	}
+
+	MemoryContextDelete(current_memcxt);
+	current_memcxt = NULL;
+	current_tupledesc = NULL;
+	current_attinmeta = NULL;
+
+	MemoryContextSwitchTo(oldcxt);
+
+	/* All done */
+	return (Datum) 0;
+}
+
+/*
  * plphp_compile_function
  *
  * 		Compile (or hopefully just look up) function
  */
 static plphp_proc_desc *
-plphp_compile_function(Oid fn_oid, int is_trigger)
+plphp_compile_function(Oid fnoid, bool is_trigger)
 {
 	HeapTuple	procTup;
 	Form_pg_proc procStruct;
@@ -1170,9 +1183,9 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 	/*
 	 * We'll need the pg_proc tuple in any case... 
 	 */
-	procTup = SearchSysCache(PROCOID, ObjectIdGetDatum(fn_oid), 0, 0, 0);
+	procTup = SearchSysCache(PROCOID, ObjectIdGetDatum(fnoid), 0, 0, 0);
 	if (!HeapTupleIsValid(procTup))
-		elog(ERROR, "cache lookup failed for function %u", fn_oid);
+		elog(ERROR, "cache lookup failed for function %u", fnoid);
 	procStruct = (Form_pg_proc) GETSTRUCT(procTup);
 
 	/*
@@ -1180,10 +1193,10 @@ plphp_compile_function(Oid fn_oid, int is_trigger)
 	 */
 	if (is_trigger)
 		snprintf(internal_proname, sizeof(internal_proname),
-				 "plphp_proc_%u_trigger", fn_oid);
+				 "plphp_proc_%u_trigger", fnoid);
 	else
 		snprintf(internal_proname, sizeof(internal_proname),
-				 "plphp_proc_%u", fn_oid);
+				 "plphp_proc_%u", fnoid);
 
 	/*
 	 * Look up the internal proc name in the hashtable
@@ -1541,87 +1554,6 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 }
 
 /*
- * plphp_call_php_srf
- * 		Invoke a SRF
- */
-static Datum
-plphp_call_php_srf(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
-{
-	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	TupleDesc	tupdesc;
-	zval	   *phpret;
-	MemoryContext	oldcxt;
-
-	Assert(desc->retset);
-
-	current_fcinfo = fcinfo;
-	current_tuplestore = NULL;
-
-	/*
-	 * Fetch the function's tuple descriptor.  This will return NULL in the
-	 * case of a scalar return type, in which case we will copy the TupleDesc
-	 * from the ReturnSetInfo.
-	 */
-	get_call_result_type(fcinfo, NULL, &tupdesc);
-	if (tupdesc == NULL)
-		tupdesc = rsi->expectedDesc;
-
-	/* Check context before allowing the call to go through */
-	if (!rsi || !IsA(rsi, ReturnSetInfo) ||
-		(rsi->allowedModes & SFRM_Materialize) == 0 ||
-		rsi->expectedDesc == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that "
-						"cannot accept a set")));
-
-	oldcxt = MemoryContextSwitchTo(rsi->econtext->ecxt_per_query_memory);
-
-	current_memcxt = AllocSetContextCreate(CurTransactionContext,
-										   "PL/php SRF context",
-										   ALLOCSET_DEFAULT_MINSIZE,
-										   ALLOCSET_DEFAULT_INITSIZE,
-										   ALLOCSET_DEFAULT_MAXSIZE);
-
-	current_tupledesc = CreateTupleDescCopy(tupdesc);
-	current_attinmeta = TupleDescGetAttInMetadata(current_tupledesc);
-
-	/*
-	 * Call the PHP function.  The user code must use return_next, which will
-	 * create and populate the tuplestore appropiately.
-	 */
-	phpret = plphp_call_php_func(desc, fcinfo);
-
-	/* We don't use the return value */
-	zval_dtor(phpret);
-
-	/* Close the SPI connection */
-	if (SPI_finish() != SPI_OK_FINISH)
-		ereport(ERROR,
-				(errcode(ERRCODE_CONNECTION_DOES_NOT_EXIST),
-				 errmsg("could not disconnect from SPI manager")));
-
-	/* Now prepare the return values. */
-	rsi->returnMode = SFRM_Materialize;
-
-	if (current_tuplestore)
-	{
-		rsi->setResult = current_tuplestore;
-		rsi->setDesc = current_tupledesc;
-	}
-
-	MemoryContextDelete(current_memcxt);
-	current_memcxt = NULL;
-	current_tupledesc = NULL;
-	current_attinmeta = NULL;
-
-	MemoryContextSwitchTo(oldcxt);
-
-	/* All done */
-	return (Datum) 0;
-}
-
-/*
  * plphp_call_php_func
  * 		Build the function argument array and call the PHP function.
  *
@@ -1733,74 +1665,6 @@ plphp_call_php_trig(plphp_proc_desc *desc, FunctionCallInfo fcinfo,
 	trigdata->is_ref = 0;
 
 	return retval;
-}
-
-/*
- * plphp_build_tuple_argument
- *
- * Build a PHP array from all attributes of a given tuple
- */
-static zval *
-plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc)
-{
-	int			i;
-	zval	   *output;
-	Datum		attr;
-	bool		isnull;
-	char	   *attname;
-	char	   *outputstr;
-	HeapTuple	typeTup;
-	Oid			typoutput;
-	Oid			typioparam;
-
-	MAKE_STD_ZVAL(output);
-	array_init(output);
-
-	for (i = 0; i < tupdesc->natts; i++)
-	{
-		/* Ignore dropped attributes */
-		if (tupdesc->attrs[i]->attisdropped)
-			continue;
-
-		/* Get the attribute name */
-		attname = tupdesc->attrs[i]->attname.data;
-
-		/* Get the attribute value */
-		attr = heap_getattr(tuple, i + 1, tupdesc, &isnull);
-
-		/* If it is null, set it to undef in the hash. */
-		if (isnull)
-		{
-			add_next_index_unset(output);
-			continue;
-		}
-
-		/*
-		 * Lookup the attribute type in the syscache for the output function
-		 */
-		typeTup = SearchSysCache(TYPEOID,
-								 ObjectIdGetDatum(tupdesc->attrs[i]->atttypid),
-								 0, 0, 0);
-		if (!HeapTupleIsValid(typeTup))
-		{
-			elog(ERROR, "cache lookup failed for type %u",
-				 tupdesc->attrs[i]->atttypid);
-		}
-
-		typoutput = ((Form_pg_type) GETSTRUCT(typeTup))->typoutput;
-		typioparam = getTypeIOParam(typeTup);
-		ReleaseSysCache(typeTup);
-
-		/* Append the attribute name and the value to the list. */
-		outputstr =
-			DatumGetCString(OidFunctionCall3(typoutput, attr,
-											 ObjectIdGetDatum(typioparam),
-											 Int32GetDatum(tupdesc->attrs[i]->atttypmod)));
-		add_assoc_string(output, attname, outputstr, 1);
-		pfree(outputstr);
-	}
-
-	return output;
 }
 
 /*

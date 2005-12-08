@@ -8,7 +8,7 @@ APXS = $(shell which apxs apxs2)
 SHLIB_LINK = -lphp4 -L$(shell $(APXS) -q libexecdir)
 
 REGRESS_OPTS = --dbname=$(PL_TESTDB) --load-language=plphp
-REGRESS = base shared trigger spi raise pseudo validator
+REGRESS = base shared trigger spi raise pseudo srf validator
 
 install: install-php
 
