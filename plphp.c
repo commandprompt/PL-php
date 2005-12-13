@@ -34,6 +34,9 @@
 /* PostgreSQL stuff */
 #include "postgres.h"
 
+/* This is defined in tcop/dest.h but PHP defines it again */
+#define Debug DestDebug
+
 #include "access/heapam.h"
 #include "catalog/catversion.h"
 #include "catalog/pg_language.h"
@@ -59,6 +62,7 @@
 #undef PACKAGE_STRING
 #undef PACKAGE_TARNAME
 #undef PACKAGE_VERSION
+#undef Debug
 
 /* PHP stuff */
 #include "php.h"
