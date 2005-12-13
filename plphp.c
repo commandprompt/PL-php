@@ -740,7 +740,7 @@ plphp_get_function_tupdesc(Oid result_type, Node *rsinfo)
 	}
 	else
 		/* ordinary composite type */
-		return lookup_rowtype_tupdesc(result_type, -1);
+		return lookup_rowtype_tupdesc_noerror(result_type, -1, true);
 }
 
 
@@ -1086,7 +1086,6 @@ plphp_srf_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	zval	   *phpret;
-	MemoryContext	oldcxt;
 
 	Assert(desc->retset);
 
@@ -1107,7 +1106,8 @@ plphp_srf_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 	 * case of a scalar return type, in which case we will copy the TupleDesc
 	 * from the ReturnSetInfo.
 	 */
-	get_call_result_type(fcinfo, NULL, &tupdesc);
+	tupdesc = plphp_get_function_tupdesc(desc->ret_oid,
+										 fcinfo->resultinfo);
 	if (tupdesc == NULL)
 		tupdesc = rsi->expectedDesc;
 
@@ -1120,7 +1120,7 @@ plphp_srf_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot use IN/OUT parameters in PL/php")));
 
-	oldcxt = MemoryContextSwitchTo(rsi->econtext->ecxt_per_query_memory);
+	MemoryContextSwitchTo(rsi->econtext->ecxt_per_query_memory);
 
 	/* This context is reset once per row in return_next */
 	current_memcxt = AllocSetContextCreate(CurTransactionContext,
@@ -1161,8 +1161,6 @@ plphp_srf_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 	current_memcxt = NULL;
 	current_tupledesc = NULL;
 	current_attinmeta = NULL;
-
-	MemoryContextSwitchTo(oldcxt);
 
 	/* All done */
 	return (Datum) 0;
