@@ -104,8 +104,10 @@ language plphp as $$
 		return_next($args[1] * $i);
 	}
 $$;
+ERROR:  CREATE FUNCTION / OUT parameters are not implemented
 select * from retset5(5, 2);
-ERROR:  cannot use return_next in functions not declared to return a set
+ERROR:  function retset5(integer, integer) does not exist
+HINT:  No function matches the given name and argument types. You may need to add explicit type casts.
 -- Try to return setof array
 create or replace function retset6(int, int) returns setof int[]
 language plphp as $$
