@@ -3,7 +3,7 @@
 # (1) Fill in the blanks
 # (2) Make sure pg_config is in your path ($PATH:/usr/local/pgsql/bin make) for example.
 # (3) Make sure that php-config is installed and in your path
-# (4) Enter paatch to apxs or apxs2 (depending on apache version installed)
+# (4) Enter path to apxs or apxs2 (depending on apache version installed)
 # (5) Enter the PHP version you would like to use php4 or php5
 # (6) Enter the path to the PHP apache Module
 # (7) Make
