@@ -13,7 +13,7 @@
 MODULE_big = plphp
 OBJS = plphp.o plphp_io.o plphp_spi.o
 REGRESS = basic trigger
-PG_CPPFLAGS = $(shell php-config --includes)
+PG_CPPFLAGS = $(shell php-config5 --includes)
 
 #
 # Place the fully qualified path to you apxs or apxs2 application
