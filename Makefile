@@ -32,22 +32,30 @@ PHP_VERSION = php5
 #
 # Set path to your php apache module
 #
-# Ex: PHP_LIB_PATH = /usr/lib/apache2/modules/libphp5.so
-PHP_LIB_PATH = /usr/lib/apache2/modules/libphp5.so
+# Set automatically by default using apxs -q command
+#
+# If it doesn't work - set it manually, e.g.
+# PHP_LIB_PATH = /usr/lib/apache2/modules
+# PHP_LIB_NAME = libphp5.so
+
+PHP_LIB_PATH = $(shell $(APXS) -q libexecdir)
+PHP_LIB_NAME = lib$(PHP_VERSION)$(DLSUFFIX)
 
 #
 # You should not have to modify anything below this line
 #
 
-SHLIB_LINK = -l$(PHP_VERSION) -L$(shell $(APXS) -q libexecdir)
+SHLIB_LINK = -l$(PHP_VERSION) -L$(PHP_LIB_PATH)
 
 REGRESS_OPTS = --dbname=$(PL_TESTDB) --load-language=plphp
 REGRESS = base shared trigger spi raise cargs pseudo srf validator
 
+all:
+
 install: install-php
 
 install-php:
-	$(LN_S) -f $(shell $(APXS) -q $(PHP_LIB_PATH)) $(libdir)
+	$(LN_S) -f $(PHP_LIB_PATH)/$(PHP_LIB_NAME) $(libdir)
 
 PGXS = $(shell pg_config --pgxs)
 include $(PGXS)
