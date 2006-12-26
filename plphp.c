@@ -105,7 +105,7 @@
 
 #ifdef DEBUG_PLPHP_MEMORY
 #define REPORT_PHP_MEMUSAGE(where) \
-	elog(NOTICE, "PHP mem usage: %s: %u", where, AG(allocated_memory));
+	elog(NOTICE, "PHP mem usage: «%s»: %u", where, AG(allocated_memory));
 #else
 #define REPORT_PHP_MEMUSAGE(a) 
 #endif
