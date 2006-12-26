@@ -4,6 +4,7 @@
 #ifndef PLPHP_SPI_H
 #define PLPHP_SPI_H
 
+#define Debug DestDebug
 #include "executor/spi.h"
 #include "funcapi.h"
 
@@ -16,6 +17,7 @@
 #undef PACKAGE_STRING
 #undef PACKAGE_TARNAME
 #undef PACKAGE_VERSION
+#undef Debug
 
 #include "Zend/zend_API.h"
 

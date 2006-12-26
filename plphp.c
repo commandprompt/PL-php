@@ -105,7 +105,7 @@
 
 #ifdef DEBUG_PLPHP_MEMORY
 #define REPORT_PHP_MEMUSAGE(where) \
-	elog(NOTICE, "PHP mem usage: «%s»: %u", where, AG(allocated_memory));
+	elog(NOTICE, "PHP mem usage: %s: %u", where, AG(allocated_memory));
 #else
 #define REPORT_PHP_MEMUSAGE(a) 
 #endif
@@ -328,7 +328,7 @@ sapi_plphp_flush(void *sth)
 }
 
 static int
-sapi_plphp_send_headers(TSRMLS_CC)
+sapi_plphp_send_headers(TSRMLS_D)
 {
 	return 1;
 }
