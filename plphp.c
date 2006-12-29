@@ -101,7 +101,7 @@
 
 #ifdef DEBUG_PLPHP_MEMORY
 #define REPORT_PHP_MEMUSAGE(where) \
-	elog(NOTICE, "PHP mem usage: «%s»: %u", where, AG(allocated_memory));
+	elog(NOTICE, "PHP mem usage: %s: %u", where, AG(allocated_memory));
 #else
 #define REPORT_PHP_MEMUSAGE(a) 
 #endif
@@ -1609,7 +1609,7 @@ plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 	orig_symbol_table = EG(active_symbol_table);
 	EG(active_symbol_table) = symbol_table;
 
-	if (call_user_function_ex(EG(function_table), NULL, funcname, &retval,
+	if (call_user_function_ex(CG(function_table), NULL, funcname, &retval,
 							  2, params, 1, NULL TSRMLS_CC) == FAILURE)
 		elog(ERROR, "could not call function \"%s\"", call);
 
@@ -1655,7 +1655,7 @@ plphp_call_php_trig(plphp_proc_desc *desc, FunctionCallInfo fcinfo,
 	 */
 	trigdata->is_ref = 1;
 
-	if (call_user_function_ex(EG(function_table), NULL, funcname, &retval,
+	if (call_user_function_ex(CG(function_table), NULL, funcname, &retval,
 							  1, params, 1, NULL TSRMLS_CC) == FAILURE)
 		elog(ERROR, "could not call function \"%s\"", call);
 
