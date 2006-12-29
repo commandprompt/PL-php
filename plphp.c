@@ -107,61 +107,6 @@
 #endif
 
 /*
- * These symbols are needed by the Apache module (libphp*.so).  We don't
- * actually use those, but they are needed so that the linker can do its
- * job without complaining.
- *
- * FIXME -- this looks like a mighty hacky way of doing things.  Apparently
- * a more correct way of doing it would be creating a new PHP SAPI, but I'm
- * refraining from that, at least for now.
-*/
-void	   *ap_loaded_modules = NULL;
-void	   *unixd_config = NULL;
-void	   *ap_server_root = NULL;
-void	   *apr_pool_cleanup_null = NULL;
-void	   *ap_auth_type = NULL;
-void	   *ap_log_rerror = NULL;
-void	   *ap_hook_post_config = NULL;
-void	   *apr_table_add = NULL;
-void	   *ap_get_brigade = NULL;
-void	   *ap_hook_handler = NULL;
-void	   *ap_update_mtime = NULL;
-void	   *apr_brigade_flatten = NULL;
-void	   *ap_add_cgi_vars = NULL;
-void	   *ap_server_root_relative = NULL;
-void	   *apr_table_set = NULL;
-void	   *ap_set_content_type = NULL;
-void	   *ap_get_server_version = NULL;
-void	   *apr_pool_cleanup_register = NULL;
-void	   *ap_mpm_query = NULL;
-void	   *ap_destroy_sub_req = NULL;
-void	   *ap_pass_brigade = NULL;
-void	   *apr_pstrdup = NULL;
-void	   *apr_table_unset = NULL;
-void	   *ap_log_error = NULL;
-void	   *apr_table_get = NULL;
-void	   *ap_sub_req_lookup_uri = NULL;
-void	   *apr_psprintf = NULL;
-void	   *ap_run_sub_req = NULL;
-void	   *apr_palloc = NULL;
-void	   *apr_brigade_cleanup = NULL;
-void	   *ap_hook_pre_config = NULL;
-void	   *ap_rwrite = NULL;
-void	   *apr_table_elts = NULL;
-void	   *ap_add_version_component = NULL;
-void	   *apr_bucket_eos_create = NULL;
-void	   *apr_pool_userdata_set = NULL;
-void	   *apr_brigade_create = NULL;
-void	   *ap_rflush = NULL;
-void	   *ap_set_last_modified = NULL;
-void	   *ap_add_common_vars = NULL;
-void	   *apr_pool_userdata_get = NULL;	
-
-/* Used in PHP 5.1.1 */
-void	   *apr_pool_cleanup_run = NULL;
-void	   *apr_snprintf = NULL;
-
-/*
  * Return types.  Why on earth is this a bitmask?  Beats me.
  * We should have separate flags instead.
  */
