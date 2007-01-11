@@ -1,0 +1,76 @@
+dnl Process this file with autoconf to produce a configure script.
+
+AC_PREREQ(2.59)
+AC_INIT(PlPHP, 1.2, plphp@lists.commandprompt.com)
+AC_CONFIG_SRCDIR([plphp_io.c])
+AC_CONFIG_HEADER([config.h])
+
+# Checks for common programs.
+AC_PROG_CC
+AC_PROG_AWK
+
+# -with-libphp-path configure argument for custom path to libphp
+AC_ARG_WITH([phplib-path], [--with-libphp-path	directory, containing php static library (libphp5.a or libphp4.a)], [LDFLAGS+=-L${with_phplib_path}])
+
+# check for pg_config 
+AC_PATH_PROGS([PG_CONFIG], [pg_config])
+if test "$PG_CONFIG" = ""; then
+    AC_MSG_ERROR([Cannot locate pg_config])
+fi	
+
+PGXS=$($PG_CONFIG --pgxs)
+AC_SUBST(PGXS)
+
+# check for PostgreSQL version
+AC_MSG_CHECKING([for PostgreSQL version])
+PG_VERSION=$($PG_CONFIG --version|$AWK '{ print $2 }')
+PG_MAJOR_VERSION=$(echo "$PG_VERSION"|$AWK -F. '{ print $1 }')
+PG_MINOR_VERSION=$(echo "$PG_VERSION"|$AWK -F. '{ print $2 }')
+AC_MSG_RESULT([$PG_VERSION])
+
+STOP="no"
+if test $PG_MAJOR_VERSION -lt 8 ; then
+    STOP="yes"
+else
+    if test "$PG_MAJOR_VERSION" = 8 -a "$PG_MINOR_VERSION" -lt 1 ; then
+	STOP="yes"
+    fi
+fi
+if test "$STOP" = "yes"; then
+    AC_MSG_ERROR([PosgreSQL 8.1 or newer required])
+fi
+AC_DEFINE_UNQUOTED(PG_MAJOR_VERSION,$PG_MAJOR_VERSION,[PostgreSQL major version])
+AC_DEFINE_UNQUOTED(PG_MINOR_VERSION,$PG_MINOR_VERSION,[PostgreSQL minor version])
+
+# check for php-config    
+AC_PATH_PROGS([PHP_CONFIG], [php-config])
+if test "$PHP_CONFIG" = ""; then
+    AC_MSG_ERROR([Cannot locate php-config])
+fi
+
+PHP_INCLUDES=$($PHP_CONFIG --includes)
+AC_SUBST(PHP_INCLUDES)
+
+# Checks for libraries.
+AC_CHECK_LIB([xml2], [main], [], [AC_MSG_ERROR([Cannot locate libxml2])])
+AC_CHECK_LIB([php5], [main],[], [have_php5="no"])
+if test "$have_php5" = "no"; then
+    AC_CHECK_LIB([php4], [main], [], [have_php4="no"])
+fi
+if test "$have_php5" = "no" -a "$have_php4" = "no"; then
+    AC_MSG_ERROR([Cannot locate php library])
+fi
+
+# Checks for header files.
+AC_CHECK_HEADERS([fcntl.h unistd.h])
+
+# Checks for typedefs, structures, and compiler characteristics.
+AC_HEADER_STDBOOL
+AC_C_CONST
+
+# Checks for library functions.
+AC_FUNC_MALLOC
+AC_CHECK_FUNCS([strcasecmp strdup])
+
+AC_CONFIG_FILES([Makefile])
+AC_OUTPUT
