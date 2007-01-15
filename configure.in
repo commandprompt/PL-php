@@ -10,7 +10,7 @@ AC_PROG_CC
 AC_PROG_AWK
 
 # -with-libphp-path configure argument for custom path to libphp
-AC_ARG_WITH([phplib-path], [--with-libphp-path	directory, containing php static library (libphp5.a or libphp4.a)], [LDFLAGS+=-L${with_phplib_path}])
+AC_ARG_WITH([libphp-path], [  --with-libphp-path=DIR  directory, containing php static library (libphp5.a or libphp4.a)], [LDFLAGS+=-L${with_libphp_path}])
 
 # check for pg_config 
 AC_PATH_PROGS([PG_CONFIG], [pg_config])
@@ -19,6 +19,13 @@ if test "$PG_CONFIG" = ""; then
 fi	
 
 PGXS=$($PG_CONFIG --pgxs)
+AC_MSG_CHECKING([for existence of $PGXS])
+if test -f "$PGXS"; then
+AC_MSG_RESULT([ok])
+else
+AC_MSG_RESULT([no])
+AC_MSG_ERROR([file $PGXS doesn't exist])
+fi
 AC_SUBST(PGXS)
 
 # check for PostgreSQL version
