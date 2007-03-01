@@ -123,6 +123,8 @@
 #define REPORT_PHP_MEMUSAGE(a) 
 #endif
 
+PG_MODULE_MAGIC;
+
 /*
  * Return types.  Why on earth is this a bitmask?  Beats me.
  * We should have separate flags instead.

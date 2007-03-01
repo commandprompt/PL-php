@@ -10,10 +10,13 @@ AC_PROG_CC
 AC_PROG_AWK
 
 # -with-libphp-path configure argument for custom path to libphp
-AC_ARG_WITH([libphp-path], [  --with-libphp-path=DIR  directory, containing php static library (libphp5.a or libphp4.a)], [LDFLAGS+=-L${with_libphp_path}])
+AC_ARG_WITH([php], AC_HELP_STRING([--with-php=DIR], 
+								  [specify a path to the PHP installation]), [PHP_PATH=$withval])
+AC_ARG_WITH([postgres], AC_HELP_STRING([--with-postgres=DIR], 
+									   [specify a path to the PostgreSQL installation]), [PG_PATH=$withval])
 
 # check for pg_config 
-AC_PATH_PROGS([PG_CONFIG], [pg_config])
+AC_PATH_PROG([PG_CONFIG], [pg_config], [], [$PG_PATH:$PG_PATH/bin:$PATH])
 if test "$PG_CONFIG" = ""; then
     AC_MSG_ERROR([Cannot locate pg_config])
 fi	
@@ -50,16 +53,18 @@ AC_DEFINE_UNQUOTED(PG_MAJOR_VERSION,$PG_MAJOR_VERSION,[PostgreSQL major version]
 AC_DEFINE_UNQUOTED(PG_MINOR_VERSION,$PG_MINOR_VERSION,[PostgreSQL minor version])
 
 # check for php-config    
-AC_PATH_PROGS([PHP_CONFIG], [php-config])
+AC_PATH_PROGS([PHP_CONFIG], [php-config], [], [$PHP_PATH:$PHP_PATH/bin:$PATH])
 if test "$PHP_CONFIG" = ""; then
     AC_MSG_ERROR([Cannot locate php-config])
 fi
 
 PHP_INCLUDES=$($PHP_CONFIG --includes)
+PHP_LDFLAGS=$($PHP_CONFIG --libs)
 AC_SUBST(PHP_INCLUDES)
+AC_SUBST(PHP_LDFLAGS)
+LDFLAGS+=-L"$($PHP_CONFIG --prefix)"/lib
 
 # Checks for libraries.
-AC_CHECK_LIB([xml2], [main], [], [AC_MSG_ERROR([Cannot locate libxml2])])
 AC_CHECK_LIB([php5], [main],[], [have_php5="no"])
 if test "$have_php5" = "no"; then
     AC_CHECK_LIB([php4], [main], [], [have_php4="no"])
