@@ -24,7 +24,7 @@ fi
 PGXS=$($PG_CONFIG --pgxs)
 AC_MSG_CHECKING([for existence of $PGXS])
 if test -f "$PGXS"; then
-AC_MSG_RESULT([ok])
+AC_MSG_RESULT([yes])
 else
 AC_MSG_RESULT([no])
 AC_MSG_ERROR([file $PGXS doesn't exist])
