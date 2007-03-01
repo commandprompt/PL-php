@@ -65,12 +65,12 @@ AC_SUBST(PHP_LDFLAGS)
 LDFLAGS+=-L"$($PHP_CONFIG --prefix)"/lib
 
 # Checks for libraries.
-AC_CHECK_LIB([php5], [main],[], [have_php5="no"])
+AC_CHECK_LIB([php5], [php_module_startup],[], [have_php5="no"], [$PHP_LDFLAGS])
 if test "$have_php5" = "no"; then
-    AC_CHECK_LIB([php4], [main], [], [have_php4="no"])
+    AC_CHECK_LIB([php4], [php_module_startup], [], [have_php4="no"], [$PHP_LDFLAGS])
 fi
 if test "$have_php5" = "no" -a "$have_php4" = "no"; then
-    AC_MSG_ERROR([Cannot locate php library])
+    AC_MSG_ERROR([Cannot locate a proper php library])
 fi
 
 # Checks for header files.
