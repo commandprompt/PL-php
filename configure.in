@@ -14,6 +14,16 @@ AC_ARG_WITH([php], AC_HELP_STRING([--with-php=DIR],
 								  [specify a path to the PHP installation]), [PHP_PATH=$withval])
 AC_ARG_WITH([postgres], AC_HELP_STRING([--with-postgres=DIR], 
 									   [specify a path to the PostgreSQL installation]), [PG_PATH=$withval])
+AC_ARG_ENABLE([debug], AC_HELP_STRING([--enable-debug],
+									  [build with debug information]), [DEBUG="$enableval"  ],[])
+
+AC_MSG_CHECKING([whether to build with debug information])
+if test "$DEBUG" = "yes"; then
+	CPPFLAGS+="-g";
+	AC_MSG_RESULT([yes])
+else
+	AC_MSG_RESULT([no])
+fi
 
 # check for pg_config 
 AC_PATH_PROG([PG_CONFIG], [pg_config], [], [$PG_PATH:$PG_PATH/bin:$PATH])

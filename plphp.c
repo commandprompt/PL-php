@@ -1675,6 +1675,7 @@ plphp_error_cb(int type, const char *filename, const uint lineno,
 		case E_CORE_WARNING:
 		case E_COMPILE_WARNING:
 		case E_USER_WARNING:
+		case E_STRICT:
 			elevel = WARNING;
 			break;
 		case E_NOTICE:
