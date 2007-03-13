@@ -353,16 +353,20 @@ plphp_zval_get_cstring(zval *val, bool do_array, bool null_ok)
 			return NULL;
 		case IS_LONG:
 			ret = palloc(64);
-			snprintf(ret, 64, "%ld", val->value.lval);
+			snprintf(ret, 64, "%ld", Z_LVAL_P(val));
 			break;
 		case IS_DOUBLE:
 			ret = palloc(64);
-			snprintf(ret, 64, "%f", val->value.dval);
+			snprintf(ret, 64, "%f", Z_DVAL_P(val));
+			break;
+		case IS_BOOL:
+			ret = palloc(8);
+			snprintf(ret, 8, "%s", Z_BVAL_P(val) ? "true": "false");
 			break;
 		case IS_STRING:
-			ret = palloc(val->value.str.len + 1);
-			snprintf(ret, val->value.str.len + 1, "%s", 
-					 val->value.str.val);
+			ret = palloc(Z_STRLEN_P(val) + 1);
+			snprintf(ret, Z_STRLEN_P(val) + 1, "%s", 
+					 Z_STRVAL_P(val));
 			break;
 		case IS_ARRAY:
 			if (!do_array)

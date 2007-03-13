@@ -970,13 +970,14 @@ plphp_func_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 
 	if (phpret)
 	{
-		switch (phpret->type)
+		switch (Z_TYPE_P(phpret))
 		{
 			case IS_NULL:
 				fcinfo->isnull = true;
 				break;
-			case IS_LONG:
+			case IS_BOOL:
 			case IS_DOUBLE:
+			case IS_LONG:
 			case IS_STRING:
 				retvalbuffer = plphp_zval_get_cstring(phpret, false, false);
 				retval = CStringGetDatum(retvalbuffer);
