@@ -16,6 +16,16 @@ AC_ARG_WITH([postgres], AC_HELP_STRING([--with-postgres=DIR],
 									   [specify a path to the PostgreSQL installation]), [PG_PATH=$withval])
 AC_ARG_ENABLE([debug], AC_HELP_STRING([--enable-debug],
 									  [build with debug information]), [DEBUG="$enableval"  ],[])
+# Checks for header files.
+AC_CHECK_HEADERS([fcntl.h unistd.h])
+
+# Checks for typedefs, structures, and compiler characteristics.
+AC_HEADER_STDBOOL
+AC_C_CONST
+
+# Checks for library functions.
+AC_FUNC_MALLOC
+AC_CHECK_FUNCS([strcasecmp strdup])
 
 AC_MSG_CHECKING([whether to build with debug information])
 if test "$DEBUG" = "yes"; then
@@ -83,16 +93,6 @@ if test "$have_php5" = "no" -a "$have_php4" = "no"; then
     AC_MSG_ERROR([Cannot locate a proper php library])
 fi
 
-# Checks for header files.
-AC_CHECK_HEADERS([fcntl.h unistd.h])
-
-# Checks for typedefs, structures, and compiler characteristics.
-AC_HEADER_STDBOOL
-AC_C_CONST
-
-# Checks for library functions.
-AC_FUNC_MALLOC
-AC_CHECK_FUNCS([strcasecmp strdup])
 
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT

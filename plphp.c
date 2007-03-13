@@ -267,21 +267,21 @@ sapi_plphp_flush(void *sth)
 {
 	if (currmsg != NULL)
 	{
+		Assert(currmsg->data != NULL);
+
 		if (currmsg->data[currmsg->len - 1] == '\n')
 		{
-			Assert(currmsg->data != NULL);
-
 			/*
 			 * remove the trailing newline because elog() inserts another
 			 * one
 			 */
 			currmsg->data[currmsg->len - 1] = '\0';
-			elog(LOG, "%s", currmsg->data);
-
-			pfree(currmsg->data);
-			pfree(currmsg);
-			currmsg = NULL;
 		}
+		elog(LOG, "%s", currmsg->data);
+
+		pfree(currmsg->data);
+		pfree(currmsg);
+		currmsg = NULL;
 	}
 	else
 		elog(LOG, "attempting to flush a NULL message");
