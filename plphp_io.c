@@ -312,10 +312,10 @@ plphp_array_get_elem(zval *array, char *key)
 	if (Z_TYPE_P(array) != IS_ARRAY)
 		elog(ERROR, "passed zval is not an array");
 
-	if (zend_hash_find(array->value.ht,
-					   key,
-					   strlen(key) + 1,
-					   (void **) &element) != SUCCESS)
+	if (zend_symtable_find(array->value.ht,
+					   	   key,
+					       strlen(key) + 1,
+					       (void **) &element) != SUCCESS)
 		return NULL;
 
 	return element[0];
@@ -518,8 +518,8 @@ plphp_modify_tuple(zval *outdata, TriggerData *tdata)
 		char   *attname = NameStr(tupdesc->attrs[i]->attname);
 
 		/* Fetch the attribute value from the zval */
-		if (zend_hash_find(newtup->value.ht, attname, strlen(attname) + 1,
-						   (void **) &element) != SUCCESS)
+		if (zend_symtable_find(newtup->value.ht, attname, strlen(attname) + 1,
+						   	   (void **) &element) != SUCCESS)
 			elog(ERROR, "$_TD['new'] does not contain attribute \"%s\"",
 				 attname);
 

@@ -202,7 +202,7 @@ Datum plphp_validator(PG_FUNCTION_ARGS);
 static Datum plphp_trigger_handler(FunctionCallInfo fcinfo,
 								   plphp_proc_desc *desc);
 static Datum plphp_func_handler(FunctionCallInfo fcinfo,
-								plphp_proc_desc *desc);
+							    plphp_proc_desc *desc);
 static Datum plphp_srf_handler(FunctionCallInfo fcinfo,
 						   	   plphp_proc_desc *desc);
 
@@ -744,28 +744,24 @@ plphp_trig_build_args(FunctionCallInfo fcinfo)
 			zval	   *hashref;
 
 			hashref = plphp_build_tuple_argument(tdata->tg_trigtuple, tupdesc);
-			zend_hash_update(retval->value.ht, "new", strlen("new") + 1,
-							 (void *) &hashref, sizeof(zval *), NULL);
+			add_assoc_zval(retval, "new", hashref);
 		}
 		else if (TRIGGER_FIRED_BY_DELETE(tdata->tg_event))
 		{
 			zval	   *hashref;
 
 			hashref = plphp_build_tuple_argument(tdata->tg_trigtuple, tupdesc);
-			zend_hash_update(retval->value.ht, "old", strlen("old") + 1,
-							 (void *) &hashref, sizeof(zval *), NULL);
+			add_assoc_zval(retval, "old", hashref);
 		}
 		else if (TRIGGER_FIRED_BY_UPDATE(tdata->tg_event))
 		{
 			zval	   *hashref;
 
 			hashref = plphp_build_tuple_argument(tdata->tg_newtuple, tupdesc);
-			zend_hash_update(retval->value.ht, "new", strlen("new") + 1,
-							 (void *) &hashref, sizeof(zval *), NULL);
+			add_assoc_zval(retval, "new", hashref);
 
 			hashref = plphp_build_tuple_argument(tdata->tg_trigtuple, tupdesc);
-			zend_hash_update(retval->value.ht, "old", strlen("old") + 1,
-							 (void *) &hashref, sizeof(zval *), NULL);
+			add_assoc_zval(retval, "old", hashref);
 		}
 		else
 			elog(ERROR, "unknown firing event for trigger function");
@@ -1004,6 +1000,7 @@ plphp_func_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 
 					tup = plphp_htup_from_zval(phpret, td);
 					retval = HeapTupleGetDatum(tup);
+					ReleaseTupleDesc(td);
 				}
 				else
 					/* FIXME -- should return the thing as a string? */
@@ -1142,7 +1139,6 @@ plphp_compile_function(Oid fnoid, bool is_trigger)
 	char		internal_proname[64];
 	plphp_proc_desc *prodesc = NULL;
 	int			i;
-	bool		uptodate;
 	char	   *pointer = NULL;
 
 	/*
@@ -1171,6 +1167,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger)
 									 false, true);
 	if (pointer)
 	{
+		bool uptodate;
 		sscanf(pointer, "%p", &prodesc);
 
 		uptodate =
@@ -1338,10 +1335,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger)
 				typeStruct = (Form_pg_type) GETSTRUCT(typeTup);
 
 				/* a pseudotype? */
-				if (typeStruct->typtype == 'p')
-					prodesc->arg_is_p[i] = true;
-				else
-					prodesc->arg_is_p[i] = false;
+				prodesc->arg_is_p[i] = (typeStruct->typtype == 'p');
 
 				/* deal with composite types */
 				if (typeStruct->typtype == 'c')
@@ -1474,6 +1468,8 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 				zend_hash_next_index_insert(retval->value.ht,
 											(void *) &hashref,
 											sizeof(zval *), NULL);
+				/* Finally release the acquired tupledesc */
+				ReleaseTupleDesc(tupdesc);
 			}
 		}
 		else
@@ -1557,7 +1553,7 @@ plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 	MAKE_STD_ZVAL(argc);
 	ZVAL_LONG(argc, desc->nargs);
 	zend_hash_update(symbol_table, "argc", strlen("argc") + 1,
-					 (void *) &args, sizeof(zval *), NULL);
+					 (void *) &argc, sizeof(zval *), NULL);
 
 	params[0] = &args;
 	params[1] = &argc;
@@ -1567,13 +1563,14 @@ plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 	MAKE_STD_ZVAL(funcname);
 	ZVAL_STRING(funcname, call, 1);
 	zend_hash_update(symbol_table, "funcname", strlen("funcname") + 1,
-					 (void *) &args, sizeof(zval *), NULL);
+					 (void *) &funcname, sizeof(zval *), NULL);
 
 	REPORT_PHP_MEMUSAGE("going to call the function");
 
 	orig_symbol_table = EG(active_symbol_table);
 	EG(active_symbol_table) = symbol_table;
 
+	/* XXX: why no_separation param is 1 is this call ? */
 	if (call_user_function_ex(CG(function_table), NULL, funcname, &retval,
 							  2, params, 1, NULL TSRMLS_CC) == FAILURE)
 		elog(ERROR, "could not call function \"%s\"", call);
