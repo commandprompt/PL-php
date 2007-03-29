@@ -82,7 +82,7 @@ PHP_INCLUDES=$($PHP_CONFIG --includes)
 PHP_LDFLAGS=$($PHP_CONFIG --libs)
 AC_SUBST(PHP_INCLUDES)
 AC_SUBST(PHP_LDFLAGS)
-LDFLAGS+=-L"$($PHP_CONFIG --prefix)"/lib
+LDFLAGS+=" -L$($PHP_CONFIG --prefix)/lib"
 
 # Checks for libraries.
 AC_CHECK_LIB([php5], [php_module_startup],[], [have_php5="no"], [$PHP_LDFLAGS])
