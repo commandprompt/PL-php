@@ -9,7 +9,6 @@ AC_CONFIG_HEADER([config.h])
 AC_PROG_CC
 AC_PROG_AWK
 
-# -with-libphp-path configure argument for custom path to libphp
 AC_ARG_WITH([php], AC_HELP_STRING([--with-php=DIR], 
 								  [specify a path to the PHP installation]), [PHP_PATH=$withval])
 AC_ARG_WITH([postgres], AC_HELP_STRING([--with-postgres=DIR], 
@@ -82,7 +81,7 @@ PHP_INCLUDES=$($PHP_CONFIG --includes)
 PHP_LDFLAGS=$($PHP_CONFIG --libs)
 AC_SUBST(PHP_INCLUDES)
 AC_SUBST(PHP_LDFLAGS)
-LDFLAGS+=" -L$($PHP_CONFIG --prefix)/lib"
+LDFLAGS="$LDFLAGS -L$($PHP_CONFIG --prefix)/lib"
 
 # Checks for libraries.
 AC_CHECK_LIB([php5], [php_module_startup],[], [have_php5="no"], [$PHP_LDFLAGS])

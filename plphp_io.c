@@ -267,7 +267,7 @@ plphp_convert_to_pg_array(zval *array)
  * FIXME -- does not correctly quote/dequote the values
  */
 zval *
-plphp_convert_from_pg_array(char *input)
+plphp_convert_from_pg_array(char *input TSRMLS_DC)
 {
 	zval	   *retval = NULL;
 	int			i;
