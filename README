@@ -1,0 +1,33 @@
+PL/php 1.3 installation instructions.
+
+You can always get the recent version of this document at:
+http://projects.commandprompt.com/public/plphp/wiki/InstallDocs
+
+Current PL/php release utilizes the GNU build system using autoconf/configure 
+to detect system-specific features. To build PL/php you need PHP development 
+package as well as PHP library (libphp.a or libphp.so). 
+
+You can build static PHP library by doing make libphp5.so (in case of PHP5) and 
+then copy the resulting library from .libs/libphp5.a to the lib subdirectory of 
+the PHP installation path, which can be obtained by issuing:
+	php-config --prefix 
+If php-config --prefix tells that your PHP installation path is /usr/local/php5 
+copy the library to the /usr/local/php5/lib. Or you can build PHP embed library 
+by specifying --enable-embed option when configuring PHP. Apache's libphp.so is 
+no longer supported. In some cases configure may fail to locate your PostgreSQL 
+or PHP installation. You can use the following configure options to correct this 
+(use configure --help to list all available configure options):
+
+	--with-php=[DIR]
+	    specify a path to the existing PHP installation 
+		(configure searches for php-config in the specified DIR or DIR/bin) 
+	--with-postgres=[DIR]
+	    specify a path to the PostgreSQL installation 
+		(configure looks for pg_config in the DIR or DIR/bin). 
+
+Note that you need at least PostgreSQL 8.1 to use PL/php 1.3.2 and beyond. 
+Current PL/php was tested with PostgreSQL 8.2/PHP 5.
+
+If you have problems using PL/php  or wish to report a bug, use
+plphp@lists.commandprompt.com maillist.
+
