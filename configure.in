@@ -38,7 +38,8 @@ fi
 AC_PATH_PROG([PG_CONFIG], [pg_config], [], [$PG_PATH:$PG_PATH/bin:$PATH])
 if test "$PG_CONFIG" = ""; then
     AC_MSG_ERROR([Cannot locate pg_config])
-fi	
+fi
+AC_SUBST(PG_CONFIG)
 
 PGXS=$($PG_CONFIG --pgxs)
 AC_MSG_CHECKING([for existence of $PGXS])

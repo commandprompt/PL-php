@@ -27,6 +27,6 @@ REGRESS = base shared trigger spi raise cargs pseudo srf validator
 all: all-lib
 install: install-lib
 
-
+PG_CONFIG = @PG_CONFIG@
 PGXS = @PGXS@
 include $(PGXS)
