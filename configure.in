@@ -54,7 +54,7 @@ AC_SUBST(PGXS)
 AC_MSG_CHECKING([for PostgreSQL version])
 PG_VERSION=$($PG_CONFIG --version|$AWK '{ print $2 }')
 PG_MAJOR_VERSION=$(echo "$PG_VERSION"|$AWK -F. '{ print $1 }')
-PG_MINOR_VERSION=$(echo "$PG_VERSION"|$AWK -F. '{ print $2 }')
+PG_MINOR_VERSION=$(echo "$PG_VERSION"|$AWK -F. '{ print substr($2,1,1) }')
 AC_MSG_RESULT([$PG_VERSION])
 
 STOP="no"
