@@ -48,18 +48,18 @@
 /* PostgreSQL stuff */
 #include "postgres.h"
 #include "access/heapam.h"
-/* For InvalidTransactionId definition in PostgreSQL 8.2*/
-#if PG_MAJOR_VERSION == 8 && PG_MINOR_VERSION >= 2
 #include "access/transam.h"
-#endif
+
 #include "catalog/catversion.h"
 #include "catalog/pg_language.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
+
 #include "commands/trigger.h"
 #include "fmgr.h"
 #include "funcapi.h"			/* needed for SRF support */
 #include "lib/stringinfo.h"
+
 #include "utils/builtins.h"
 #include "utils/elog.h"
 #include "utils/lsyscache.h"
@@ -107,10 +107,12 @@
 /* Check for PostgreSQL version */
 #if (CATALOG_VERSION_NO == 200411041)
 #define PG_VERSION_80_COMPAT
-#elif (CATALOG_VERSION_NO >= 200510211)
+#elif (CATALOG_VERSION_NO == 200510211)
 #define PG_VERSION_81_COMPAT
+#elif (CATALOG_VERSION_NO >= 200611241)
+#define PG_VERSION_82_COMPAT
 #else
-#error "Unrecognized PostgreSQL version"
+#error "Unsupported PostgreSQL version"
 #endif
 
 
@@ -123,7 +125,12 @@
 #define REPORT_PHP_MEMUSAGE(a) 
 #endif
 
+#ifdef PG_VERSION_82_COMPAT
 PG_MODULE_MAGIC;
+#else
+/* Supress warnings on 8.1 and below */
+#define ReleaseTupleDesc(tupdesc) 
+#endif
 
 /*
  * Return types.  Why on earth is this a bitmask?  Beats me.
@@ -500,8 +507,8 @@ plphp_init(void)
 Datum
 plphp_call_handler(PG_FUNCTION_ARGS)
 {
-	TSRMLS_FETCH();
 	Datum		retval;
+	TSRMLS_FETCH();
 
 	/* Initialize interpreter */
 	plphp_init_all();
