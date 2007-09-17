@@ -97,10 +97,7 @@ fi
 # Checks for libraries.
 AC_CHECK_LIB([php5], [php_module_startup],[], [have_php5="no"], [$PHP_LDFLAGS])
 if test "$have_php5" = "no"; then
-    AC_CHECK_LIB([php4], [php_module_startup], [], [have_php4="no"], [$PHP_LDFLAGS])
-fi
-if test "$have_php5" = "no" -a "$have_php4" = "no"; then
-    AC_MSG_ERROR([Cannot locate a proper php library])
+	AC_MSG_ERROR([Cannot find PHP 5 SAPI library])
 fi
 
 

@@ -60,6 +60,7 @@
 #include "funcapi.h"			/* needed for SRF support */
 #include "lib/stringinfo.h"
 
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/elog.h"
 #include "utils/lsyscache.h"
@@ -1209,10 +1210,12 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		Form_pg_language langStruct;
 		Form_pg_type typeStruct;
 		Datum		prosrcdatum;
+		Datum		proargnamesdatum;
 		bool		isnull;
 		char	   *proc_source;
 		char	   *complete_proc_source;
 		char	   *pointer = NULL;
+		char		*aliases;
 
 		/*
 		 * Allocate a new procedure description block
@@ -1367,6 +1370,56 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 			}
 		}
 
+		/* Get function parameter names */
+		proargnamesdatum = SysCacheGetAttr(PROCOID, procTup,
+									   Anum_pg_proc_proargnames,
+									   &isnull);
+		if (isnull)
+			aliases = pstrdup("");
+		else
+		{
+			Datum	*elems = NULL;
+			int		nelems,
+					end;
+			char	*alias;
+
+			/* deconstruct_array takes different number of arguments
+			 * depending on the PostgreSQL version.
+			 */
+#ifdef PG_VERSION_82_COMPAT			
+			deconstruct_array(DatumGetArrayTypeP(proargnamesdatum), 
+							  TEXTOID, -1, false, 'i',
+							  &elems, NULL, &nelems);
+#else
+			deconstruct_array(DatumGetArrayTypeP(proargnamesdatum), 
+							  TEXTOID, -1, false, 'i',
+							  &elems, &nelems);
+#endif
+
+
+			if (nelems != prodesc->nargs)
+				elog(ERROR, "number of function arguments doesn't match to the number "
+					 		"of elements in proargnames");
+
+
+			aliases = palloc((NAMEDATALEN + 32) * procStruct->pronargs);
+			end = 0;
+
+			/* Create PHP aliases for args[i] parameters in aliases variable */
+			for (i = 0; i < nelems; i++)
+			{
+				alias = DatumGetCString(DirectFunctionCall1(textout,
+														 	elems[i]));
+				if (strlen(alias) != 0)
+				{
+					int len = snprintf(aliases + end, NAMEDATALEN + 32, " $%s = &$args[%d];", alias, i);
+					end += len;
+				}
+			}
+			/* Prepend a space after the last alias declaration */
+			strcat(aliases, " ");
+		}
+
 		/*
 		 * Create the text of the PHP function.  We do not use the same
 		 * function name, because that would prevent function overloading.
@@ -1385,15 +1438,16 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		complete_proc_source =
 			(char *) palloc(strlen(proc_source) +
 							strlen(internal_proname) +
-							strlen("function  ($args, $argc){ } "));
+							strlen(aliases) + 
+							strlen("function  ($args, $argc){ } ") + 32);
 
 		/* XXX Is this usage of sprintf safe? */
 		if (is_trigger)
 			sprintf(complete_proc_source, "function %s($_TD){%s}",
 					internal_proname, proc_source);
 		else
-			sprintf(complete_proc_source, "function %s($args, $argc){%s}",
-					internal_proname, proc_source);
+			sprintf(complete_proc_source, "function %s($args, $argc){%s %s}",
+					internal_proname, aliases, proc_source);
 
 		zend_hash_del(CG(function_table), prodesc->proname,
 					  strlen(prodesc->proname) + 1);
@@ -1412,6 +1466,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 					   prodesc->proname);
 		}
 
+		pfree(aliases);
 		pfree(complete_proc_source);
 	}
 
