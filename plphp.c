@@ -106,16 +106,18 @@
 							 PHP_INI_SYSTEM, PHP_INI_STAGE_ACTIVATE);
 
 /* Check for PostgreSQL version */
-#if (CATALOG_VERSION_NO == 200411041)
-#define PG_VERSION_80_COMPAT
-#elif (CATALOG_VERSION_NO == 200510211)
-#define PG_VERSION_81_COMPAT
-#elif (CATALOG_VERSION_NO >= 200611241)
+#if (CATALOG_VERSION_NO >= 200709301)
+#define PG_VERSION_83_COMPAT
+#endif
+#if (CATALOG_VERSION_NO >= 200611241)
 #define PG_VERSION_82_COMPAT
+#endif
+/* We only support 8.1 and above */
+#if (CATALOG_VERSION_NO >= 200510211)
+#define PG_VERSION_81_COMPAT
 #else
 #error "Unsupported PostgreSQL version"
 #endif
-
 
 #undef DEBUG_PLPHP_MEMORY
 
@@ -126,6 +128,9 @@
 #define REPORT_PHP_MEMUSAGE(a) 
 #endif
 
+/* PostgreSQL starting from v 8.2 requires this define
+ * for all modules.
+ */
 #ifdef PG_VERSION_82_COMPAT
 PG_MODULE_MAGIC;
 #else
@@ -149,7 +154,7 @@ typedef enum pl_type
  *
  * "proname" is the name of the function, given by the user.
  *
- * fn_xmin and fn_xmin are used to know when a function has been redefined and
+ * fn_xmin and fn_cmin are used to know when a function has been redefined and
  * needs to be recompiled.
  *
  * trusted indicates whether the function was created with a trusted handler.
@@ -1186,9 +1191,21 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		bool uptodate;
 		sscanf(pointer, "%p", &prodesc);
 
+#ifdef PG_VERSION_83_COMPAT
+		/* PostgreSQL 8.3 doesn't allow calling GetCmin if a tuple doesn't
+		 * originate from the current transaction.
+		 */
+		uptodate =
+			(prodesc->fn_xmin == HeapTupleHeaderGetXmin(procTup->t_data) &&
+			 prodesc->fn_cmin == HeapTupleHeaderGetRawCommandId(procTup->t_data));
+
+#else
 		uptodate =
 			(prodesc->fn_xmin == HeapTupleHeaderGetXmin(procTup->t_data) &&
 			 prodesc->fn_cmin == HeapTupleHeaderGetCmin(procTup->t_data));
+
+#endif
+
 
 		/* We need to delete the old entry */
 		if (!uptodate)
@@ -1237,7 +1254,17 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		}
 
 		prodesc->fn_xmin = HeapTupleHeaderGetXmin(procTup->t_data);
+
+#ifdef PG_VERSION_83_COMPAT
+		/* PostgreSQL 8.3 doesn't allow calling GetCmin if a tuple doesn't
+		 * originate from the current transaction.
+		 */
+		prodesc->fn_cmin = HeapTupleHeaderGetRawCommandId(procTup->t_data);
+
+#else
 		prodesc->fn_cmin = HeapTupleHeaderGetCmin(procTup->t_data);
+
+#endif
 
 		/*
 		 * Look up the pg_language tuple by Oid
@@ -1335,11 +1362,8 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 
 			for (i = 0; i < prodesc->nargs; i++)
 			{
-#ifdef PG_VERSION_80_COMPAT
-				Datum argid = procStruct->proargtypes[i];
-#else
 				Datum argid = procStruct->proargtypes.values[i];
-#endif
+
 				typeTup = SearchSysCache(TYPEOID, argid, 0, 0, 0);
 
 				if (!HeapTupleIsValid(typeTup))
@@ -1383,19 +1407,20 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 					end;
 			char	*alias;
 
-			/* deconstruct_array takes different number of arguments
-			 * depending on the PostgreSQL version.
+#ifdef PG_VERSION_82_COMPAT
+			/* This function has one extra argument starting
+			 * from PostgreSQL 8.2
 			 */
-#ifdef PG_VERSION_82_COMPAT			
 			deconstruct_array(DatumGetArrayTypeP(proargnamesdatum), 
 							  TEXTOID, -1, false, 'i',
 							  &elems, NULL, &nelems);
+
 #else
 			deconstruct_array(DatumGetArrayTypeP(proargnamesdatum), 
 							  TEXTOID, -1, false, 'i',
 							  &elems, &nelems);
-#endif
 
+#endif
 
 			if (nelems != prodesc->nargs)
 				elog(ERROR, "number of function arguments doesn't match to the number "
