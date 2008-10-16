@@ -88,9 +88,22 @@ CPPFLAGS="$PHP_INCLUDES $CPPFLAGS"
 # checking if ZTS (zend thread safety) is enabled
 AC_CHECK_DECL(ZTS, [zts_enabled="yes"], [zts_enabled="no"], [ #include "php_config.h" ]) 
 if test "$zts_enabled" = "yes"; then
-	AC_MSG_ERROR([PL/php requres non thread-safe PHP build, please, rebuild your PHP library with thread-safe support disabled])
+	AC_MSG_ERROR([PL/php requires non thread-safe PHP build.
+Please rebuild your PHP library with thread-safe support disabled])
 fi
 
+AC_MSG_CHECKING([whether PHP is compiled with the Embed SAPI])
+$PHP_CONFIG --php-sapis | grep -q embed
+if test $? == 0; then
+	embed_sapi_present=yes
+else
+	embed_sapi_present=no
+fi
+AC_MSG_RESULT([$embed_sapi_present])
+if test "$embed_sapi_present" = "no"; then
+	AC_MSG_ERROR([PL/php requires the Embed PHP SAPI.
+Please rebuild your PHP library with --enable-embed])
+fi
 
 # Checks for libraries.
 AC_CHECK_LIB([php5], [php_module_startup],[], [have_php5="no"], [$PHP_LDFLAGS])
