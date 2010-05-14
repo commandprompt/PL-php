@@ -11,10 +11,12 @@
 
 #include "plphp_io.h"
 
+#include "catalog/pg_type.h"
 #include "executor/spi.h"
 #include "funcapi.h"
 #include "lib/stringinfo.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 #include "utils/memutils.h"
 
 /*

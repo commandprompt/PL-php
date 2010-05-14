@@ -31,6 +31,7 @@
  *********************************************************************
  */
 
+#include "postgres.h"
 #include "plphp_spi.h"
 #include "plphp_io.h"
 
@@ -38,6 +39,7 @@
 #include "php.h"
 
 /* PostgreSQL stuff */
+#include "access/xact.h"
 #include "miscadmin.h"
 
 #undef DEBUG_PLPHP_MEMORY
