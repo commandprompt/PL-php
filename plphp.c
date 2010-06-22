@@ -138,6 +138,12 @@ PG_MODULE_MAGIC;
 #define ReleaseTupleDesc(tupdesc) 
 #endif
 
+/* PHP 5.2 and earlier do not contain these definitions */
+#ifndef Z_SET_ISREF_P
+#define Z_SET_ISREF_P(foo) (foo)->is_ref = 1
+#define Z_UNSET_ISREF_P(foo) (foo)->is_ref = 0
+#endif
+
 /*
  * Return types.  Why on earth is this a bitmask?  Beats me.
  * We should have separate flags instead.
@@ -1710,7 +1716,7 @@ plphp_call_php_trig(plphp_proc_desc *desc, FunctionCallInfo fcinfo,
 	 * call_user_function_ex.  This way the user function will be able to 
 	 * modify it, in order to change NEW.
 	 */
-	trigdata->is_ref = 1;
+	Z_SET_ISREF_P(trigdata);
 
 	if (call_user_function_ex(CG(function_table), NULL, funcname, &retval,
 							  1, params, 1, NULL TSRMLS_CC) == FAILURE)
@@ -1719,7 +1725,7 @@ plphp_call_php_trig(plphp_proc_desc *desc, FunctionCallInfo fcinfo,
 	FREE_ZVAL(funcname);
 
 	/* Return to the original state */
-	trigdata->is_ref = 0;
+	Z_UNSET_ISREF_P(trigdata);
 
 	return retval;
 }
