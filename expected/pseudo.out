@@ -54,11 +54,11 @@ SELECT (translated_number(numbers.*, languages.*)).*
 (1 row)
 
 SELECT * FROM translated_number(
-	row(1000, 'mil (español)', 'mil (français)')::numbers,
+	row(1000, 'mil (spanish)', 'mil (french)')::numbers,
 	row(1, 'french')::languages
 );
- number |  translation   | language 
---------+----------------+----------
-   1000 | mil (français) | french
+ number | translation  | language 
+--------+--------------+----------
+   1000 | mil (french) | french
 (1 row)
 
