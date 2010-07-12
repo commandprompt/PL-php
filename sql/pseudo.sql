@@ -49,6 +49,6 @@ SELECT (translated_number(numbers.*, languages.*)).*
  WHERE numbers.id = 3 AND languages.id = 2;
 
 SELECT * FROM translated_number(
-	row(1000, 'mil (español)', 'mil (français)')::numbers,
+	row(1000, 'mil (spanish)', 'mil (french)')::numbers,
 	row(1, 'french')::languages
 );

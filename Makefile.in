@@ -10,7 +10,7 @@ PG_CPPFLAGS = @PHP_INCLUDES@ @CPPFLAGS@
 
 SHLIB_LINK = @LDFLAGS@ @LIBS@ @PHP_LDFLAGS@
 
-REGRESS_OPTS = --dbname=$(PL_TESTDB) --load-language=plphp --multibyte=latin1
+REGRESS_OPTS = --dbname=$(PL_TESTDB) --load-language=plphp
 REGRESS = base shared trigger spi raise cargs pseudo srf validator
 
 all: all-lib
