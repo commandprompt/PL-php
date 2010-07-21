@@ -1,50 +1,8 @@
-PL/php Installation Procedure
+PL/php is a procedural language add-on for PostgreSQL.
 
-You can always get the recent version of this document at:
-https://public.commandprompt.com/projects/plphp/wiki/InstallDocs
+It allows you to create PHP functions that are stored inside a PostgreSQL
+database server.  They can then be used as stored procedures.  They have
+many of the functionalities of a standard PostgreSQL function, and you
+can use them to write triggers, set-returning functions, and plain functions
+that would just be too complex or cumbersome to write in PL/pgSQL.
 
-Note that building against Apache's mod_php (libphp.so) is no longer supported.
-
-The current PL/php release utilizes the GNU build system using
-autoconf/configure to detect system-specific features.
-If the configure program is not present (perhaps because you downloaded from
-Subversion), you need to run
-
-	autoconf
-
-Use configure --help to list all the available options.
-
-In some cases configure may fail to locate your PostgreSQL or PHP installation.
-You can use the following configure options to correct this:
-
---with-php=PHPDIR::
-       specify a path to the PHP installation (configure searches for
-	php-config in PHPDIR or PHPDIR/bin)
- --with-postgres=PGDIR::
-       specify a path to the PostgreSQL installation (configure looks for
-	pg_config in PGDIR or PGDIR/bin).
-Note 1: you need at least PostgreSQL 8.1 and PHP 5.
-
-Note 2: you need GNU make to build PL/php. On systems where GNU make is not the
-default make program (e.g. FreeBSD) you can usually invoke the GNU version with
-gmake.
-
-Building a suitable PHP installation
-To build PL/php you need the PHP "embed" library (libphp5.so). To build and
-install a shared PHP embed library, unpack the PHP tarball, change dir to the
-PHP source dir and configure with the appropriate options:
-
-	tar xfj php-5.2.6.tar.bz2
-	cd php-5.2.6
-	configure --enable-embed --prefix=/usr/local [--other-options]
-	make install
-You can, of course, use any other directory instead of /usr/local, but then you
-need to make sure that the PostgreSQL server will be able to find the libraries
-in there if you use something else (either by using LD_LIBRARY_PATH or by
-adding it to /etc/ld.so.conf).
-
-If it doesn't work
-
-Please open a ticket here if you see a problem, with all the details you manage
-to put into it, so that we can find out how to solve it.
-	https://public.commandprompt.com/projects/plphp
