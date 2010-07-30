@@ -71,14 +71,11 @@ if test "$PHP_CONFIG" = ""; then
     AC_MSG_ERROR([Cannot locate php-config])
 fi
 
-PHP_INCLUDES=$($PHP_CONFIG --includes)
-PHP_LDFLAGS=$($PHP_CONFIG --libs)
-AC_SUBST(PHP_INCLUDES)
-AC_SUBST(PHP_LDFLAGS)
-LDFLAGS="$LDFLAGS -L$($PHP_CONFIG --prefix)/lib"
+LIBS="$LIBS $($PHP_CONFIG --libs)"
+LDFLAGS="$LDFLAGS $($PHP_CONFIG --ldflags) -L$($PHP_CONFIG --prefix)/lib"
 
 # we need php include files path to check for ZTS
-CPPFLAGS="$PHP_INCLUDES $CPPFLAGS"
+CPPFLAGS="$CPPFLAGS $($PHP_CONFIG --includes)"
 
 # checking if ZTS (zend thread safety) is enabled
 AC_CHECK_DECL(ZTS, [zts_enabled="yes"], [zts_enabled="no"], [ #include "php_config.h" ]) 
