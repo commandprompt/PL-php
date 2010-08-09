@@ -49,6 +49,43 @@ cleanups.
 Release 1.1
 2005-12-05
 
-No patch of PostgreSQL nor PHP sources is required anymore.  The code has been
-extensively reworked since the previous PL/php release.  This release links
-against Apache's mod_php.so.
+What's in the 1.1 release:
+
+- The build system no longer requires the PHP nor PostgreSQL sources.
+  It uses PGXS, making it all much easier to build compared to the
+  original 1.0 release.
+
+- Rudimentary SPI support, meaning you can send queries to the server
+  and get/process the results.
+
+- Trigger support: you can write trigger functions, including the
+  ability to abort or skip an operation, or modifying the tuple before
+  insert/update.
+
+- Function validation: PL/php will tell you right away if the function
+  you are creating has a syntax error, and abort the creation, so no
+  invalid functions make it into the database.
+
+- You will receive any errors and warnings that PHP generates while
+  executing your function.
+
+PL/php 1.1 only works with PostgreSQL 8.0 and 8.1.  It has been tested
+with PHP 4.4.1 only, but it should work with PHP 5 as well.
+
+
+Differences from the original 1.0 release include:
+
+- Error messages and warnings are passed from PHP to Postgres instead of
+  being silently dropped.
+- No more memory leaks in SPI functions.
+- SPI results are now an opaque PHP resource, so it's no longer possible
+  to crash the server by modifying it.
+- Memory handling has been overhauled.  There are no known memory leaks.
+  Huge SPI results can be processed.
+- SRF support has been removed.  It will be added again in the next
+  release.  The previous version was found to be too buggy and poorly
+  thought-out.
+- A private symbol table is created for each function, which facilitates
+  the process of releasing memory used by the function.  This symbol
+  table is cleared after each call.
+
