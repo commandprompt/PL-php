@@ -86,7 +86,7 @@ fi
 
 AC_MSG_CHECKING([whether PHP is compiled with the Embed SAPI])
 $PHP_CONFIG --php-sapis | grep -q embed
-if test $? == 0; then
+if test $? = 0; then
 	embed_sapi_present=yes
 else
 	embed_sapi_present=no
