@@ -953,15 +953,17 @@ plphp_func_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc TSRMLS_DC)
 
 	/* Call the PHP function.  */
 	phpret = plphp_call_php_func(desc, fcinfo TSRMLS_CC);
+	if (!phpret)
+		elog(ERROR, "error during execution of function %s", desc->proname);
 
 	REPORT_PHP_MEMUSAGE("function invoked");
 
 	/* Basic datatype checks */
-	if ((desc->ret_type & PL_ARRAY) && (phpret->type != IS_ARRAY))
+	if ((desc->ret_type & PL_ARRAY) && phpret->type != IS_ARRAY)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("function declared to return array must return an array")));
-	if ((desc->ret_type & PL_TUPLE) && (phpret->type != IS_ARRAY))
+	if ((desc->ret_type & PL_TUPLE) && phpret->type != IS_ARRAY)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("function declared to return tuple must return an array")));
