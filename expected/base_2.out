@@ -111,7 +111,7 @@ SELECT test_ndim_array(6, 1);
 (1 row)
 
 SELECT test_ndim_array(7, 1);
-ERROR:  number of array dimensions (6) exceeds the maximum allowed (6)
+ERROR:  number of array dimensions (7) exceeds the maximum allowed (6)
 CREATE FUNCTION php_max (integer, integer) RETURNS integer
 STRICT LANGUAGE plphp AS $$
 	if ($args[0] > $args[1]) {
