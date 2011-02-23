@@ -3,6 +3,12 @@
 --
 
 -- Basic things: scalars and arrays.
+CREATE FUNCTION test_void() RETURNS integer
+LANGUAGE plphp AS $$
+	return;
+$$;
+SELECT test_void();
+
 CREATE FUNCTION test_an_int() RETURNS integer
 LANGUAGE plphp AS $$
 	return 1;
