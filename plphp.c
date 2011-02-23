@@ -473,7 +473,7 @@ plphp_init(void)
 				elog(ERROR, "php_request_startup call failed");
 			}
 
-			CG(interactive) = true;
+			CG(interactive) = false;
 			PG(during_request_startup) = true;
 
 			/* Register the resource for SPI_result */
