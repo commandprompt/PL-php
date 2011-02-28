@@ -8,6 +8,7 @@ AC_CONFIG_HEADER([config.h])
 # Checks for common programs.
 AC_PROG_CC
 AC_PROG_AWK
+AC_PROG_GREP
 
 AC_ARG_WITH([php], AC_HELP_STRING([--with-php=DIR], 
 								  [specify a path to the PHP installation]), [PHP_PATH=$withval])
@@ -85,7 +86,7 @@ Please rebuild your PHP library with thread-safe support disabled])
 fi
 
 AC_MSG_CHECKING([whether PHP is compiled with the Embed SAPI])
-$PHP_CONFIG --php-sapis | grep -q embed
+$PHP_CONFIG --php-sapis | $GREP embed >/dev/null 2>&1
 if test $? = 0; then
 	embed_sapi_present=yes
 else
