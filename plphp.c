@@ -760,6 +760,7 @@ plphp_trig_build_args(FunctionCallInfo fcinfo)
 	add_assoc_string(retval, "name", tdata->tg_trigger->tgname, 1);
     add_assoc_long(retval, "relid", tdata->tg_relation->rd_id);
 	add_assoc_string(retval, "relname", SPI_getrelname(tdata->tg_relation), 1);
+	add_assoc_string(retval, "schemaname", SPI_getnspname(tdata->tg_relation), 1);
 
 	/* EVENT */
 	if (TRIGGER_FIRED_BY_INSERT(tdata->tg_event))
@@ -1551,6 +1552,12 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo TSRMLS_DC)
 			else
 			{
 				char	   *tmp;
+
+				/*
+				 * TODO room for improvement here: instead of going through the
+				 * output function, figure out if we can just use the native
+				 * representation to pass to PHP.
+				 */
 
 				tmp =
 					DatumGetCString(FunctionCall3

@@ -61,6 +61,16 @@ NOTICE:  plphp: trigger: trigtest8 table: trigfunc_table, level: ROW event: AFTE
 NOTICE:  plphp: trigger: trigtest8 table: trigfunc_table, level: ROW event: AFTER DELETE old val: 2
 NOTICE:  plphp: trigger: trigtest8 table: trigfunc_table, level: ROW event: AFTER DELETE old val: 2
 NOTICE:  plphp: trigger: trigtest11 table: trigfunc_table, level: STATEMENT event: AFTER DELETE
+-- Do we get the schema?
+CREATE FUNCTION trigfunc2() RETURNS trigger LANGUAGE plphp AS $$
+	$extra = "";
+	
+	pg_raise('notice', "schema: ${_TD['schemaname']} table: ${_TD['relname']}");
+$$;
+create schema "the schema" create table "the table" (a int);
+create trigger trig2test after insert on "the schema"."the table" for each row execute procedure trigfunc2();
+insert into "the schema"."the table" values (4);
+NOTICE:  plphp: schema: the schema table: the table
 -- Add an additional attribute to NEW
 CREATE FUNCTION trigfunc_test1() RETURNS trigger LANGUAGE plphp AS $$
 	$_TD['new']['a'] = 'foo';
