@@ -896,39 +896,33 @@ plphp_trigger_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc TSRMLS_DC)
 				}
 				else if (strcasecmp(srv, "MODIFY") == 0)
 				{
-					if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
-						retval = PointerGetDatum(plphp_modify_tuple(zTrigData,
-																	trigdata));
-					else if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
+					if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event) ||
+						TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
 						retval = PointerGetDatum(plphp_modify_tuple(zTrigData,
 																	trigdata));
 					else if (TRIGGER_FIRED_BY_DELETE(trigdata->tg_event))
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
-								 errmsg("on delete trigger can not modify the "
-										"the return tuple")));
+								 errmsg("on delete trigger can not modify the the return tuple")));
 					else
 						elog(ERROR, "unknown event in trigger function");
 				}
 				else
 					ereport(ERROR,
 							(errcode(ERRCODE_SYNTAX_ERROR),
-							 errmsg("expected trigger function to return "
-									"NULL, 'SKIP' or 'MODIFY'")));
+							 errmsg("expected trigger function to return NULL, 'SKIP' or 'MODIFY'")));
 				break;
 			case IS_NULL:
-				if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
+				if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event) ||
+					TRIGGER_FIRED_BY_DELETE(trigdata->tg_event))
 					retval = (Datum) trigdata->tg_trigtuple;
 				else if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
 					retval = (Datum) trigdata->tg_newtuple;
-				else if (TRIGGER_FIRED_BY_DELETE(trigdata->tg_event))
-					retval = (Datum) trigdata->tg_trigtuple;
 				break;
 			default:
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("expected trigger function to return "
-								"NULL, 'SKIP' or 'MODIFY'")));
+						 errmsg("expected trigger function to return NULL, 'SKIP' or 'MODIFY'")));
 				break;
 		}
 	}
