@@ -144,6 +144,13 @@ PG_MODULE_MAGIC;
 #define Z_UNSET_ISREF_P(foo) (foo)->is_ref = 0
 #endif
 
+/* 8.2 compatibility */
+#ifndef TYPTYPE_PSEUDO
+#define TYPTYPE_PSEUDO 'p'
+#define TYPTYPE_COMPOSITE 'c'
+#endif
+
+
 /*
  * Return types.  Why on earth is this a bitmask?  Beats me.
  * We should have separate flags instead.
@@ -609,7 +616,7 @@ plphp_validator(PG_FUNCTION_ARGS)
 	char		   *tmpsrc = NULL,
 				   *prosrc;
 	Datum			prosrcdatum;
-	bool			isnull;
+
 
 	TSRMLS_FETCH();
 	/* Initialize interpreter */
@@ -617,6 +624,7 @@ plphp_validator(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
+		bool			isnull;
 		/* Grab the pg_proc tuple */
 		procTup = SearchSysCache(PROCOID,
 								 ObjectIdGetDatum(funcoid),
@@ -1235,12 +1243,14 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		Form_pg_language langStruct;
 		Form_pg_type typeStruct;
 		Datum		prosrcdatum;
-		Datum		proargnamesdatum;
+		Oid			*argtypes;
+		char		**argnames;
+		char		*argmodes;
 		bool		isnull;
 		char	   *proc_source;
 		char	   *complete_proc_source;
 		char	   *pointer = NULL;
-		char		*aliases;
+		char		*aliases = NULL;
 
 		/*
 		 * Allocate a new procedure description block
@@ -1297,6 +1307,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		 */
 		if (!is_trigger)
 		{
+			int32	end = 0;
 			typeTup = SearchSysCache(TYPEOID,
 									 ObjectIdGetDatum(procStruct->prorettype),
 									 0, 0, 0);
@@ -1365,92 +1376,49 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 			prodesc->result_typioparam = getTypeIOParam(typeTup);
 
 			ReleaseSysCache(typeTup);
-
-			prodesc->nargs = procStruct->pronargs;
-
+			
+			prodesc->nargs = get_func_arg_info(procTup, &argtypes, 
+											  &argnames, &argmodes);
+			/* Allocate memory for argument names */
+			if (argnames)
+				aliases = palloc((NAMEDATALEN + 32) * prodesc->nargs);										
 			for (i = 0; i < prodesc->nargs; i++)
 			{
-				Datum argid = procStruct->proargtypes.values[i];
-
-				typeTup = SearchSysCache(TYPEOID, argid, 0, 0, 0);
-
-				if (!HeapTupleIsValid(typeTup))
+				char	typtyp = get_typtype(argtypes[i]);
+								
+				if (typtyp != TYPTYPE_COMPOSITE)
 				{
-					free(prodesc->proname);
-					free(prodesc);
-					elog(ERROR, "cache lookup failed for type %u",
-							   DatumGetObjectId(argid));
-				}
-
-				typeStruct = (Form_pg_type) GETSTRUCT(typeTup);
-
-				/* a pseudotype? */
-				prodesc->arg_is_p[i] = (typeStruct->typtype == 'p');
-
-				/* deal with composite types */
-				if (typeStruct->typtype == 'c')
-					prodesc->arg_is_rowtype[i] = true;
-				else
-				{
+					int16	typlen;
+					char	typbyval,
+							typalign,
+							typdelim;
+					Oid		typioparam,
+							typoutput;
+							
 					prodesc->arg_is_rowtype[i] = false;
-					perm_fmgr_info(typeStruct->typoutput,
-								   &(prodesc->arg_out_func[i]));
-					prodesc->arg_typioparam[i] = getTypeIOParam(typeTup);
-				}
-
-				ReleaseSysCache(typeTup);
-			}
-		}
-
-		/* Get function parameter names */
-		proargnamesdatum = SysCacheGetAttr(PROCOID, procTup,
-									   Anum_pg_proc_proargnames,
-									   &isnull);
-		if (isnull)
-			aliases = pstrdup("");
-		else
-		{
-			Datum	*elems = NULL;
-			int		nelems,
-					end;
-			char	*alias;
-
-#ifdef PG_VERSION_82_COMPAT
-			/* This function has one extra argument starting
-			 * from PostgreSQL 8.2
-			 */
-			deconstruct_array(DatumGetArrayTypeP(proargnamesdatum), 
-							  TEXTOID, -1, false, 'i',
-							  &elems, NULL, &nelems);
-
-#else
-			deconstruct_array(DatumGetArrayTypeP(proargnamesdatum), 
-							  TEXTOID, -1, false, 'i',
-							  &elems, &nelems);
-
-#endif
-
-			if (nelems != prodesc->nargs)
-				elog(ERROR, "number of function arguments doesn't match to the number "
-					 		"of elements in proargnames");
-
-
-			aliases = palloc((NAMEDATALEN + 32) * procStruct->pronargs);
-			end = 0;
-
-			/* Create PHP aliases for args[i] parameters in aliases variable */
-			for (i = 0; i < nelems; i++)
-			{
-				alias = DatumGetCString(DirectFunctionCall1(textout,
-														 	elems[i]));
-				if (strlen(alias) != 0)
+					get_type_io_data(argtypes[i],
+									 IOFunc_output,
+									 &typlen,
+									 &typbyval,
+									 &typalign,
+									 &typdelim,
+									 &typioparam,
+									 &typoutput);									
+					perm_fmgr_info(typoutput, &(prodesc->arg_out_func[i]));
+					prodesc->arg_typioparam[i] = typioparam;										
+				} else
+					prodesc->arg_is_rowtype[i] = true;
+				prodesc->arg_is_p[i] = (typtyp == TYPTYPE_PSEUDO);
+				if (aliases)
 				{
-					int len = snprintf(aliases + end, NAMEDATALEN + 32, " $%s = &$args[%d];", alias, i);
+					/* Deal with argument name */
+					int32 len = snprintf(aliases + end, NAMEDATALEN + 32, 
+								   		 " $%s = &$args[%d];", argnames[i], i);
 					end += len;
 				}
 			}
-			/* Prepend a space after the last alias declaration */
-			strcat(aliases, " ");
+			if (aliases)
+				strcat(aliases, " ");
 		}
 
 		/*
@@ -1471,7 +1439,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		complete_proc_source =
 			(char *) palloc(strlen(proc_source) +
 							strlen(internal_proname) +
-							strlen(aliases) + 
+							(aliases ? strlen(aliases) : 0) + 
 							strlen("function  ($args, $argc){ } ") + 32);
 
 		/* XXX Is this usage of sprintf safe? */
@@ -1480,7 +1448,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 					internal_proname, proc_source);
 		else
 			sprintf(complete_proc_source, "function %s($args, $argc){%s %s}",
-					internal_proname, aliases, proc_source);
+					internal_proname, aliases ? aliases : "", proc_source);
 
 		zend_hash_del(CG(function_table), prodesc->proname,
 					  strlen(prodesc->proname) + 1);
@@ -1499,7 +1467,8 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 					   prodesc->proname);
 		}
 
-		pfree(aliases);
+		if (aliases)
+			pfree(aliases);
 		pfree(complete_proc_source);
 	}
 
