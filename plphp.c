@@ -1583,6 +1583,12 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo TSRMLS_DC)
 			{
 				char	   *tmp;
 
+				/*
+				 * TODO room for improvement here: instead of going through the
+				 * output function, figure out if we can just use the native
+				 * representation to pass to PHP.
+				 */
+
 				tmp =
 					DatumGetCString(FunctionCall3
 									(&(desc->arg_out_func[i]),
