@@ -193,7 +193,7 @@ typedef struct plphp_proc_desc
 	FmgrInfo	arg_out_func[FUNC_MAX_ARGS];
 	Oid			arg_typioparam[FUNC_MAX_ARGS];
 	bool		arg_is_rowtype[FUNC_MAX_ARGS];
-	bool		arg_is_p[FUNC_MAX_ARGS];
+	bool		arg_is_pseudo[FUNC_MAX_ARGS];
 } plphp_proc_desc;
 
 /*
@@ -1397,9 +1397,10 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 									 &typoutput);									
 					perm_fmgr_info(typoutput, &(prodesc->arg_out_func[i]));
 					prodesc->arg_typioparam[i] = typioparam;										
-				} else
+				}
+				else
 					prodesc->arg_is_rowtype[i] = true;
-				prodesc->arg_is_p[i] = (typtype == TYPTYPE_PSEUDO);
+				prodesc->arg_is_pseudo[i] = (typtyp == TYPTYPE_PSEUDO);
 				if (aliases)
 				{
 					/* Deal with argument name */
@@ -1486,7 +1487,7 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo TSRMLS_DC)
 
 	for (i = 0; i < desc->nargs; i++)
 	{
-		if (desc->arg_is_p[i])
+		if (desc->arg_is_pseudo[i])
 		{
 			HeapTuple	typeTup;
 			Form_pg_type typeStruct;
