@@ -9,6 +9,7 @@
  *
  **********************************************************************/
 
+#include "postgres.h"
 #include "plphp_io.h"
 
 #include "catalog/pg_type.h"

@@ -1234,9 +1234,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 	if (prodesc == NULL)
 	{
 		HeapTuple	langTup;
-		HeapTuple	typeTup;
 		Form_pg_language langStruct;
-		Form_pg_type typeStruct;
 		Datum		prosrcdatum;
 		Oid			*argtypes;
 		char		**argnames;
@@ -1246,6 +1244,14 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		char	   *complete_proc_source;
 		char	   *pointer = NULL;
 		char		*aliases = NULL;
+		int16	typlen;
+		char	typbyval,
+				typalign,
+				typtype,
+				typdelim;
+		Oid		typioparam,
+				typinput,
+				typoutput;		
 
 		/*
 		 * Allocate a new procedure description block
@@ -1303,23 +1309,22 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		if (!is_trigger)
 		{
 			int32	end = 0;
-			typeTup = SearchSysCache(TYPEOID,
-									 ObjectIdGetDatum(procStruct->prorettype),
-									 0, 0, 0);
-			if (!HeapTupleIsValid(typeTup))
-			{
-				free(prodesc->proname);
-				free(prodesc);
-				elog(ERROR, "cache lookup failed for type %u",
-					 procStruct->prorettype);
-			}
-			typeStruct = (Form_pg_type) GETSTRUCT(typeTup);
 
+			typtype = get_typtype(procStruct->prorettype);
+			get_type_io_data(procStruct->prorettype,
+							 IOFunc_input,
+							 &typlen,
+							 &typbyval,
+							 &typalign,
+							 &typdelim,
+							 &typioparam,
+							 &typinput);									
+			
 			/*
 			 * Disallow pseudotype result, except:
 			 * VOID, RECORD, ANYELEMENT or ANYARRAY
 			 */
-			if (typeStruct->typtype == 'p')
+			if (typtype == TYPTYPE_PSEUDO)
 			{
 				if ((procStruct->prorettype == VOIDOID) ||
 					(procStruct->prorettype == RECORDOID) ||
@@ -1352,7 +1357,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 			prodesc->ret_oid = procStruct->prorettype;
 			prodesc->retset = procStruct->proretset;
 
-			if (typeStruct->typtype == 'c' ||
+			if (typtype == TYPTYPE_COMPOSITE ||
 				procStruct->prorettype == RECORDOID)
 			{
 				prodesc->ret_type |= PL_TUPLE;
@@ -1363,14 +1368,12 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 			else
 			{
 				/* function returns a normal (declared) array */
-				if (typeStruct->typlen == -1 && typeStruct->typelem)
+				if (typlen == -1 && get_element_type(procStruct->prorettype))
 					prodesc->ret_type |= PL_ARRAY;
 			}
 
-			perm_fmgr_info(typeStruct->typinput, &(prodesc->result_in_func));
-			prodesc->result_typioparam = getTypeIOParam(typeTup);
-
-			ReleaseSysCache(typeTup);
+			perm_fmgr_info(typinput, &(prodesc->result_in_func));
+			prodesc->result_typioparam = typioparam;
 			
 			prodesc->nargs = get_func_arg_info(procTup, &argtypes, 
 											  &argnames, &argmodes);
@@ -1379,17 +1382,10 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 				aliases = palloc((NAMEDATALEN + 32) * prodesc->nargs);										
 			for (i = 0; i < prodesc->nargs; i++)
 			{
-				char	typtyp = get_typtype(argtypes[i]);
+				typtype = get_typtype(argtypes[i]);
 								
-				if (typtyp != TYPTYPE_COMPOSITE)
-				{
-					int16	typlen;
-					char	typbyval,
-							typalign,
-							typdelim;
-					Oid		typioparam,
-							typoutput;
-							
+				if (typtype != TYPTYPE_COMPOSITE)
+				{							
 					prodesc->arg_is_rowtype[i] = false;
 					get_type_io_data(argtypes[i],
 									 IOFunc_output,
@@ -1403,7 +1399,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 					prodesc->arg_typioparam[i] = typioparam;										
 				} else
 					prodesc->arg_is_rowtype[i] = true;
-				prodesc->arg_is_p[i] = (typtyp == TYPTYPE_PSEUDO);
+				prodesc->arg_is_p[i] = (typtype == TYPTYPE_PSEUDO);
 				if (aliases)
 				{
 					/* Deal with argument name */
