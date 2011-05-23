@@ -192,8 +192,7 @@ typedef struct plphp_proc_desc
 	int			nargs;
 	FmgrInfo	arg_out_func[FUNC_MAX_ARGS];
 	Oid			arg_typioparam[FUNC_MAX_ARGS];
-	bool		arg_is_rowtype[FUNC_MAX_ARGS];
-	bool		arg_is_p[FUNC_MAX_ARGS];
+	char		arg_typtype[FUNC_MAX_ARGS];
 } plphp_proc_desc;
 
 /*
@@ -1382,11 +1381,10 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 			aliases = palloc((NAMEDATALEN + 32) * prodesc->nargs);										
 		for (i = 0; i < prodesc->nargs; i++)
 		{
-			typtype = get_typtype(argtypes[i]);
+			prodesc->arg_typtype[i] = get_typtype(argtypes[i]);
 							
-			if (typtype != TYPTYPE_COMPOSITE)
+			if (prodesc->arg_typtype[i] != TYPTYPE_COMPOSITE)
 			{							
-				prodesc->arg_is_rowtype[i] = false;
 				get_type_io_data(argtypes[i],
 								 IOFunc_output,
 								 &typlen,
@@ -1397,9 +1395,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 								 &typoutput);									
 				perm_fmgr_info(typoutput, &(prodesc->arg_out_func[i]));
 				prodesc->arg_typioparam[i] = typioparam;										
-			} else
-				prodesc->arg_is_rowtype[i] = true;
-			prodesc->arg_is_p[i] = (typtype == TYPTYPE_PSEUDO);
+			}
 			if (aliases)
 			{
 				/* Deal with argument name */
@@ -1485,7 +1481,7 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo TSRMLS_DC)
 
 	for (i = 0; i < desc->nargs; i++)
 	{
-		if (desc->arg_is_p[i])
+		if (desc->arg_typtype[i] == TYPTYPE_PSEUDO)
 		{
 			HeapTuple	typeTup;
 			Form_pg_type typeStruct;
@@ -1501,7 +1497,7 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo TSRMLS_DC)
 			ReleaseSysCache(typeTup);
 		}
 
-		if (desc->arg_is_rowtype[i])
+		if (desc->arg_typtype[i] == TYPTYPE_COMPOSITE)
 		{
 			if (fcinfo->argnull[i])
 				add_next_index_unset(retval);
