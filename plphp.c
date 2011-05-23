@@ -1251,7 +1251,8 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 				typdelim;
 		Oid		typioparam,
 				typinput,
-				typoutput;		
+				typoutput;
+		int32	end = 0;
 
 		/*
 		 * Allocate a new procedure description block
@@ -1308,8 +1309,6 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		 */
 		if (!is_trigger)
 		{
-			int32	end = 0;
-
 			typtype = get_typtype(procStruct->prorettype);
 			get_type_io_data(procStruct->prorettype,
 							 IOFunc_input,
@@ -1374,43 +1373,43 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 
 			perm_fmgr_info(typinput, &(prodesc->result_in_func));
 			prodesc->result_typioparam = typioparam;
-			
-			prodesc->nargs = get_func_arg_info(procTup, &argtypes, 
-											  &argnames, &argmodes);
-			/* Allocate memory for argument names */
-			if (argnames)
-				aliases = palloc((NAMEDATALEN + 32) * prodesc->nargs);										
-			for (i = 0; i < prodesc->nargs; i++)
-			{
-				typtype = get_typtype(argtypes[i]);
-								
-				if (typtype != TYPTYPE_COMPOSITE)
-				{							
-					prodesc->arg_is_rowtype[i] = false;
-					get_type_io_data(argtypes[i],
-									 IOFunc_output,
-									 &typlen,
-									 &typbyval,
-									 &typalign,
-									 &typdelim,
-									 &typioparam,
-									 &typoutput);									
-					perm_fmgr_info(typoutput, &(prodesc->arg_out_func[i]));
-					prodesc->arg_typioparam[i] = typioparam;										
-				} else
-					prodesc->arg_is_rowtype[i] = true;
-				prodesc->arg_is_p[i] = (typtype == TYPTYPE_PSEUDO);
-				if (aliases)
-				{
-					/* Deal with argument name */
-					int32 len = snprintf(aliases + end, NAMEDATALEN + 32, 
-								   		 " $%s = &$args[%d];", argnames[i], i);
-					end += len;
-				}
-			}
-			if (aliases)
-				strcat(aliases, " ");
 		}
+			
+		prodesc->nargs = get_func_arg_info(procTup, &argtypes, 
+										  &argnames, &argmodes);
+		/* Allocate memory for argument names */
+		if (argnames)
+			aliases = palloc((NAMEDATALEN + 32) * prodesc->nargs);										
+		for (i = 0; i < prodesc->nargs; i++)
+		{
+			typtype = get_typtype(argtypes[i]);
+							
+			if (typtype != TYPTYPE_COMPOSITE)
+			{							
+				prodesc->arg_is_rowtype[i] = false;
+				get_type_io_data(argtypes[i],
+								 IOFunc_output,
+								 &typlen,
+								 &typbyval,
+								 &typalign,
+								 &typdelim,
+								 &typioparam,
+								 &typoutput);									
+				perm_fmgr_info(typoutput, &(prodesc->arg_out_func[i]));
+				prodesc->arg_typioparam[i] = typioparam;										
+			} else
+				prodesc->arg_is_rowtype[i] = true;
+			prodesc->arg_is_p[i] = (typtype == TYPTYPE_PSEUDO);
+			if (aliases)
+			{
+				/* Deal with argument name */
+				int32 len = snprintf(aliases + end, NAMEDATALEN + 32, 
+							   		 " $%s = &$args[%d];", argnames[i], i);
+				end += len;
+			}
+		}
+		if (aliases)
+			strcat(aliases, " ");
 
 		/*
 		 * Create the text of the PHP function.  We do not use the same
