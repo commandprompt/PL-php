@@ -176,6 +176,12 @@ typedef enum pl_type
  * tuple, an array or a pseudotype.  ret_oid is the Oid of the return type.
  * retset indicates whether the function was declared to return a set.
  *
+ * arg_argmode indicates whether the argument is IN, OUT or both. It follows
+ * values in pg_proc.proargmodes.
+ *
+ * n_out_args - total number of OUT or INOUT arguments.
+ * arg_out_tupdesc is a tuple descriptor of the tuple constructed for OUT args.
+ *
  * XXX -- maybe this thing needs to be rethought.
  */
 typedef struct plphp_proc_desc
@@ -194,6 +200,8 @@ typedef struct plphp_proc_desc
 	Oid			arg_typioparam[FUNC_MAX_ARGS];
 	char		arg_typtype[FUNC_MAX_ARGS];
 	char		arg_argmode[FUNC_MAX_ARGS];
+	int			n_args_out;
+	TupleDesc	args_out_tupdesc;
 } plphp_proc_desc;
 
 /*
@@ -1377,6 +1385,8 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 
 		prodesc->nargs = get_func_arg_info(procTup, &argtypes, 
 										  &argnames, &argmodes);
+		prodesc->n_args_out = 0;
+		prodesc->args_out_tupdesc = NULL;
 		/* Allocate memory for argument names */
 		if (argnames)
 			aliases = palloc((NAMEDATALEN + 32) * prodesc->nargs);
@@ -1384,6 +1394,8 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		{
 			prodesc->arg_typtype[i] = get_typtype(argtypes[i]);
 			prodesc->arg_argmode[i] = argmodes[i];
+			if (argmodes[i] == PROARGMODE_OUT || argmodes[i] == PROARGMODE_INOUT)
+				prodesc->n_args_out++;
 							
 			if (prodesc->arg_typtype[i] != TYPTYPE_COMPOSITE)
 			{							
@@ -1408,6 +1420,10 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		}
 		if (aliases)
 			strcat(aliases, " ");
+		/* construct a tuple descriptor for multiple OUT argumnents */
+		if (prodesc->n_args_out > 1)
+			elog(ERROR, "Multiple OUT arguments are not supported yet");
+
 
 		/*
 		 * Create the text of the PHP function.  We do not use the same
