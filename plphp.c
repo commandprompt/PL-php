@@ -1316,8 +1316,8 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 							 &typalign,
 							 &typdelim,
 							 &typioparam,
-							 &typinput);									
-			
+							 &typinput);
+
 			/*
 			 * Disallow pseudotype result, except:
 			 * VOID, RECORD, ANYELEMENT or ANYARRAY
@@ -1373,12 +1373,12 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 			perm_fmgr_info(typinput, &(prodesc->result_in_func));
 			prodesc->result_typioparam = typioparam;
 		}
-			
+
 		prodesc->nargs = get_func_arg_info(procTup, &argtypes, 
 										  &argnames, &argmodes);
 		/* Allocate memory for argument names */
 		if (argnames)
-			aliases = palloc((NAMEDATALEN + 32) * prodesc->nargs);										
+			aliases = palloc((NAMEDATALEN + 32) * prodesc->nargs);
 		for (i = 0; i < prodesc->nargs; i++)
 		{
 			prodesc->arg_typtype[i] = get_typtype(argtypes[i]);
@@ -1392,9 +1392,9 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 								 &typalign,
 								 &typdelim,
 								 &typioparam,
-								 &typoutput);									
+								 &typoutput);
 				perm_fmgr_info(typoutput, &(prodesc->arg_out_func[i]));
-				prodesc->arg_typioparam[i] = typioparam;										
+				prodesc->arg_typioparam[i] = typioparam;
 			}
 			if (aliases)
 			{
