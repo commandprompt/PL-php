@@ -193,6 +193,7 @@ typedef struct plphp_proc_desc
 	FmgrInfo	arg_out_func[FUNC_MAX_ARGS];
 	Oid			arg_typioparam[FUNC_MAX_ARGS];
 	char		arg_typtype[FUNC_MAX_ARGS];
+	char		arg_argmode[FUNC_MAX_ARGS];
 } plphp_proc_desc;
 
 /*
@@ -1382,6 +1383,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		for (i = 0; i < prodesc->nargs; i++)
 		{
 			prodesc->arg_typtype[i] = get_typtype(argtypes[i]);
+			prodesc->arg_argmode[i] = argmodes[i];
 							
 			if (prodesc->arg_typtype[i] != TYPTYPE_COMPOSITE)
 			{							
