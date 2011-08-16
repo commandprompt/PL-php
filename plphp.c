@@ -1251,7 +1251,8 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		char	   *proc_source;
 		char	   *complete_proc_source;
 		char	   *pointer = NULL;
-		char		*aliases = NULL;
+		char	   *aliases = NULL;
+		char	   *out_return_str = NULL;
 		int16	typlen;
 		char	typbyval,
 				typalign,
@@ -1390,12 +1391,21 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		/* Allocate memory for argument names */
 		if (argnames)
 			aliases = palloc((NAMEDATALEN + 32) * prodesc->nargs);
+		out_return_str = NULL;
 		for (i = 0; i < prodesc->nargs; i++)
 		{
 			prodesc->arg_typtype[i] = get_typtype(argtypes[i]);
 			prodesc->arg_argmode[i] = argmodes[i];
-			if (argmodes[i] == PROARGMODE_OUT || argmodes[i] == PROARGMODE_INOUT)
+			
+			if (argmodes[i] == PROARGMODE_OUT)
 				prodesc->n_args_out++;
+			if (argmodes[i] == PROARGMODE_TABLE)
+				elog(ERROR, "Table arguments are not supported");
+			if (argmodes[i] == PROARGMODE_INOUT)
+				elog(ERROR, "IN/OUT arguments are not supported");
+			if (argmodes[i] == PROARGMODE_VARIADIC)
+				elog(ERROR, "VARIADIC arguments are not supported");
+			
 							
 			if (prodesc->arg_typtype[i] != TYPTYPE_COMPOSITE)
 			{							
@@ -1410,21 +1420,31 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 				perm_fmgr_info(typoutput, &(prodesc->arg_out_func[i]));
 				prodesc->arg_typioparam[i] = typioparam;
 			}
-			if (aliases)
+			if (aliases 
+				&& argmodes[i] != PROARGMODE_OUT 
+				&& argnames[i][0] != '\0')
 			{
 				/* Deal with argument name */
 				int32 len = snprintf(aliases + end, NAMEDATALEN + 32, 
-							   		 " $%s = &$args[%d];", argnames[i], i);
+							   		 " $%s = &$args[%d];", argnames[i], 
+									 i - prodesc->n_args_out);
 				end += len;
+			}
+			else if (argmodes[i] == PROARGMODE_OUT && 
+					 argnames[i][0] != '\0')
+			{
+				assert(prodesc->n_args_out == 1);
+				if (!out_return_str)
+					out_return_str = palloc((NAMEDATALEN + 32) * 
+									 prodesc->n_args_out);
+				sprintf(out_return_str, "return $%s;", argnames[i]);
 			}
 		}
 		if (aliases)
 			strcat(aliases, " ");
-		/* construct a tuple descriptor for multiple OUT argumnents */
 		if (prodesc->n_args_out > 1)
 			elog(ERROR, "Multiple OUT arguments are not supported yet");
-
-
+			
 		/*
 		 * Create the text of the PHP function.  We do not use the same
 		 * function name, because that would prevent function overloading.
@@ -1444,16 +1464,24 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 			(char *) palloc(strlen(proc_source) +
 							strlen(internal_proname) +
 							(aliases ? strlen(aliases) : 0) + 
-							strlen("function  ($args, $argc){ } ") + 32);
+							strlen("function  ($args, $argc){ } ") + 32 +
+							(out_return_str ? strlen(out_return_str) : 0));
 
 		/* XXX Is this usage of sprintf safe? */
 		if (is_trigger)
 			sprintf(complete_proc_source, "function %s($_TD){%s}",
 					internal_proname, proc_source);
 		else
-			sprintf(complete_proc_source, "function %s($args, $argc){%s %s}",
-					internal_proname, aliases ? aliases : "", proc_source);
-
+			sprintf(complete_proc_source, 
+					"function %s($args, $argc){%s %s; %s}",
+					internal_proname, 
+					aliases ? aliases : "", 
+					proc_source, 
+					out_return_str? out_return_str : "");
+					
+		elog(DEBUG3, "complete_proc_source = %s",
+				 	 complete_proc_source);
+				
 		zend_hash_del(CG(function_table), prodesc->proname,
 					  strlen(prodesc->proname) + 1);
 
@@ -1473,6 +1501,8 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 
 		if (aliases)
 			pfree(aliases);
+		if (out_return_str)
+			pfree(out_return_str);
 		pfree(complete_proc_source);
 	}
 
