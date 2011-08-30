@@ -1252,6 +1252,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		char	   *complete_proc_source;
 		char	   *pointer = NULL;
 		char	   *aliases = NULL;
+		char	   *out_aliases = NULL;
 		char	   *out_return_str = NULL;
 		int16	typlen;
 		char	typbyval,
@@ -1261,8 +1262,10 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		Oid		typioparam,
 				typinput,
 				typoutput;
-		int32	end = 0;
-
+		int32	alias_str_end,
+				out_str_end;
+						
+		alias_str_end = out_str_end = 0;	
 		/*
 		 * Allocate a new procedure description block
 		 */
@@ -1392,13 +1395,20 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		if (argnames)
 			aliases = palloc((NAMEDATALEN + 32) * prodesc->nargs);
 		out_return_str = NULL;
+		/* Count the number of OUT arguments. Need to do this out of the
+		 * main loop, to correctly determine the object to return for OUT args
+	     */
+		for (i = 0; i < prodesc->nargs; i++)
+		{
+			if (argmodes[i] == PROARGMODE_OUT)
+				prodesc->n_args_out++;
+		}
+		/* Main argument processing loop */
 		for (i = 0; i < prodesc->nargs; i++)
 		{
 			prodesc->arg_typtype[i] = get_typtype(argtypes[i]);
 			prodesc->arg_argmode[i] = argmodes[i];
 			
-			if (argmodes[i] == PROARGMODE_OUT)
-				prodesc->n_args_out++;
 			if (argmodes[i] == PROARGMODE_TABLE)
 				elog(ERROR, "Table arguments are not supported");
 			if (argmodes[i] == PROARGMODE_INOUT)
@@ -1425,25 +1435,67 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 				&& argnames[i][0] != '\0')
 			{
 				/* Deal with argument name */
-				int32 len = snprintf(aliases + end, NAMEDATALEN + 32, 
-							   		 " $%s = &$args[%d];", argnames[i], 
-									 i - prodesc->n_args_out);
-				end += len;
+				alias_str_end += snprintf(aliases + alias_str_end,
+									 	  NAMEDATALEN + 32,
+							   		 	  " $%s = &$args[%d];", argnames[i],
+									 	  i - prodesc->n_args_out);
 			}
 			else if (argmodes[i] == PROARGMODE_OUT && 
 					 argnames[i][0] != '\0')
 			{
-				assert(prodesc->n_args_out == 1);
+				/* Initialiazation for OUT arguments aliases */
 				if (!out_return_str)
-					out_return_str = palloc((NAMEDATALEN + 32) * 
-									 prodesc->n_args_out);
-				sprintf(out_return_str, "return $%s;", argnames[i]);
+				{
+					/* Generate return statment for a single OUT argument */
+					out_return_str = palloc(NAMEDATALEN + 32);
+					if (prodesc->n_args_out == 1)
+						snprintf(out_return_str, NAMEDATALEN + 32,
+								 "return $%s;", argnames[i]);
+					else
+					{
+						/* PL/PHP deals with multiple OUT arguments by
+						 * internally creating an array of references to them.
+						 * E.g. out_fn(a out integer, b out integer )
+						 * translates into:
+						 * $_plphp_ret_out_fn_1234=array(a => $&a,b => $&b);
+						 */
+						char plphp_ret_array_name[NAMEDATALEN + 32];
+
+						int array_namelen = snprintf(plphp_ret_array_name,
+						 						 	 NAMEDATALEN + 32,
+								 				 	 "_plphp_ret_%s",
+												 	 internal_proname);
+
+						snprintf(out_return_str, NAMEDATALEN + 32,
+								"return $%s;", plphp_ret_array_name);
+								
+						out_aliases = palloc(array_namelen +
+											 2 * prodesc->n_args_out *
+											 (NAMEDATALEN+16) + 16);
+						out_str_end = snprintf(out_aliases,
+						 					   array_namelen +
+											   2 * (NAMEDATALEN + 16) + 16,
+											   "$%s = array('%s' => &$%s",
+											   plphp_ret_array_name,
+											   argnames[i],
+											   argnames[i]);
+					}
+				} 
+				else if (out_aliases)
+				{
+				   /* Add new elements to the array of aliases for OUT args */
+					Assert(prodesc->n_args_out > 1);
+					out_str_end += snprintf(out_aliases+out_str_end,
+											(NAMEDATALEN +16)*2,
+											",'%s' => &$%s",
+											argnames[i], argnames[i]);
+				}
 			}
 		}
 		if (aliases)
 			strcat(aliases, " ");
-		if (prodesc->n_args_out > 1)
-			elog(ERROR, "Multiple OUT arguments are not supported yet");
+		if (out_aliases)
+			strcat(out_aliases, ")");
 			
 		/*
 		 * Create the text of the PHP function.  We do not use the same
@@ -1464,6 +1516,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 			(char *) palloc(strlen(proc_source) +
 							strlen(internal_proname) +
 							(aliases ? strlen(aliases) : 0) + 
+							(out_aliases ? strlen(out_aliases) : 0) +
 							strlen("function  ($args, $argc){ } ") + 32 +
 							(out_return_str ? strlen(out_return_str) : 0));
 
@@ -1473,9 +1526,10 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 					internal_proname, proc_source);
 		else
 			sprintf(complete_proc_source, 
-					"function %s($args, $argc){%s %s; %s}",
+					"function %s($args, $argc){%s %s;%s; %s}",
 					internal_proname, 
-					aliases ? aliases : "", 
+					aliases ? aliases : "",
+					out_aliases ? out_aliases : "",
 					proc_source, 
 					out_return_str? out_return_str : "");
 					
@@ -1501,6 +1555,8 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 
 		if (aliases)
 			pfree(aliases);
+		if (out_aliases)
+			pfree(out_aliases);
 		if (out_return_str)
 			pfree(out_return_str);
 		pfree(complete_proc_source);
@@ -1529,6 +1585,9 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo TSRMLS_DC)
 
 	for (i = 0; i < desc->nargs; i++)
 	{
+		/* Skip OUT arguments */
+		if (desc->arg_argmode[i] == PROARGMODE_OUT)
+			continue;
 		if (desc->arg_typtype[i] == TYPTYPE_PSEUDO)
 		{
 			HeapTuple	typeTup;
