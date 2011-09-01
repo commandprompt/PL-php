@@ -1391,9 +1391,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 										  &argnames, &argmodes);
 		prodesc->n_args_out = 0;
 		prodesc->args_out_tupdesc = NULL;
-		/* Allocate memory for argument names */
-		if (argnames)
-			aliases = palloc((NAMEDATALEN + 32) * prodesc->nargs);
+
 		out_return_str = NULL;
 		/* Count the number of OUT arguments. Need to do this out of the
 		 * main loop, to correctly determine the object to return for OUT args
@@ -1403,6 +1401,13 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 			if (argmodes[i] == PROARGMODE_OUT)
 				prodesc->n_args_out++;
 		}
+
+		/* Allocate memory for argument names unless all of them are OUT*/
+		if (argnames && prodesc->n_args_out < prodesc->nargs)
+			aliases = palloc((NAMEDATALEN + 32) * 
+							  (prodesc->nargs - prodesc->n_args_out));
+			
+
 		/* Main argument processing loop */
 		for (i = 0; i < prodesc->nargs; i++)
 		{
@@ -1435,6 +1440,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 				&& argnames[i][0] != '\0')
 			{
 				/* Deal with argument name */
+				Assert(aliases != NULL);
 				alias_str_end += snprintf(aliases + alias_str_end,
 									 	  NAMEDATALEN + 32,
 							   		 	  " $%s = &$args[%d];", argnames[i],
@@ -1459,22 +1465,27 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 						 * translates into:
 						 * $_plphp_ret_out_fn_1234=array(a => $&a,b => $&b);
 						 */
-						char plphp_ret_array_name[NAMEDATALEN + 32];
+						char plphp_ret_array_name[NAMEDATALEN + 16];
 
 						int array_namelen = snprintf(plphp_ret_array_name,
-						 						 	 NAMEDATALEN + 32,
+						 						 	 NAMEDATALEN + 16,
 								 				 	 "_plphp_ret_%s",
 												 	 internal_proname);
 
-						snprintf(out_return_str, NAMEDATALEN + 32,
+						snprintf(out_return_str, array_namelen + 16,
 								"return $%s;", plphp_ret_array_name);
 								
+						/* 2 NAMEDATALEN for argument names, additional
+						 * 16 bytes per each argument for assignment string,
+						 * additional 16 bytes for the 'array' prefix string.
+						 */		
 						out_aliases = palloc(array_namelen +
-											 2 * prodesc->n_args_out *
-											 (NAMEDATALEN+16) + 16);
+											 prodesc->n_args_out *
+											 (2*NAMEDATALEN + 16) + 16);
+											
 						out_str_end = snprintf(out_aliases,
 						 					   array_namelen +
-											   2 * (NAMEDATALEN + 16) + 16,
+											   (2 * NAMEDATALEN + 16) + 16,
 											   "$%s = array('%s' => &$%s",
 											   plphp_ret_array_name,
 											   argnames[i],
@@ -1486,7 +1497,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 				   /* Add new elements to the array of aliases for OUT args */
 					Assert(prodesc->n_args_out > 1);
 					out_str_end += snprintf(out_aliases+out_str_end,
-											(NAMEDATALEN +16)*2,
+											2 * NAMEDATALEN + 16,
 											",'%s' => &$%s",
 											argnames[i], argnames[i]);
 				}
