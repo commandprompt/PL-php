@@ -61,6 +61,9 @@ plphp_zval_from_tuple(HeapTuple tuple, TupleDesc tupdesc)
  * The return HeapTuple is allocated in the current memory context and must
  * be freed by the caller.
  *
+ * If zval doesn't contain any of the element names from the TupleDesc,
+ * build a tuple from the first N elements. This allows us to accept
+ * arrays in form array(1,2,3) as the result of functions with OUT arguments.
  * XXX -- possible optimization: keep the memory context created and only
  * reset it between calls.
  */
@@ -71,8 +74,11 @@ plphp_htup_from_zval(zval *val, TupleDesc tupdesc)
 	MemoryContext	tmpcxt;
 	HeapTuple		ret;
 	AttInMetadata  *attinmeta;
+	HashPosition	pos;
+	zval		  **element;
 	char		  **values;
 	int				i;
+	bool			allempty = true;
 
 	tmpcxt = AllocSetContextCreate(TopTransactionContext,
 								   "htup_from_zval cxt",
@@ -86,11 +92,28 @@ plphp_htup_from_zval(zval *val, TupleDesc tupdesc)
 	for (i = 0; i < tupdesc->natts; i++)
 	{
 		char   *key = SPI_fname(tupdesc, i + 1);
+		zval   *scalarval = plphp_array_get_elem(val, key);
 
-		/* may be NULL but we don't care */
-		values[i] = plphp_zval_get_cstring(plphp_array_get_elem(val, key),
-										   true, true);
+		values[i] = plphp_zval_get_cstring(scalarval, true, true);
+		/* 
+		 * Reset the flag is even one of the keys actually exists,
+		 * even if it is NULL.
+		 */
+		if (scalarval != NULL)
+			allempty = false;
 	}
+	/* None of the names from the tuple exists,
+	 * try to get 1st N array elements and assign them to the tuple
+	 */
+	if (allempty)
+		for (i = 0, 
+			 zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(val), &pos);
+			 (zend_hash_get_current_data_ex(Z_ARRVAL_P(val), 
+										   (void **) &element,
+											&pos) == SUCCESS) && 
+			(i < tupdesc->natts);
+			zend_hash_move_forward_ex(Z_ARRVAL_P(val), &pos), i++)
+			values[i] = plphp_zval_get_cstring(element[0], true, true);
 
 	attinmeta = TupleDescGetAttInMetadata(tupdesc);
 
