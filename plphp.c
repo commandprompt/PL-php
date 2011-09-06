@@ -1179,7 +1179,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 	Form_pg_proc procStruct;
 	char		internal_proname[64];
 	plphp_proc_desc *prodesc = NULL;
-	int			i, j;
+	int			i;
 	char	   *pointer = NULL;
 
 	/*
@@ -1423,17 +1423,13 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		else
 			MemSet(prodesc->arg_argmode, PROARGMODE_IN,
 			 	   prodesc->n_total_args);
-			
+
 		/* Allocate memory for argument names unless all of them are OUT*/
-		if (argnames && prodesc->n_out_args < prodesc->n_total_args)
-			aliases = palloc((NAMEDATALEN + 32) * 
-							  (prodesc->n_total_args - prodesc->n_out_args));
-		/* 
-		 * Main argument processing loop. The first var iterates over every
-		 * argument, the second one - over the real ones, i.e. IN or INOUT
-		 */
-		for (i = 0, j = 0; i < prodesc->n_total_args; 
-			 j = (prodesc->arg_argmode[i++] != PROARGMODE_OUT) ? j + 1 : j )
+		if (argnames && prodesc->n_total_args > 0)
+			aliases = palloc((NAMEDATALEN + 32) * prodesc->n_total_args);
+		
+		/* Main argument processing loop. */
+		for (i = 0; i < prodesc->n_total_args; i++)
 		{
 			prodesc->arg_typtype[i] = get_typtype(argtypes[i]);
 			if (prodesc->arg_typtype[i] != TYPTYPE_COMPOSITE)
@@ -1449,20 +1445,16 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 				perm_fmgr_info(typoutput, &(prodesc->arg_out_func[i]));
 				prodesc->arg_typioparam[i] = typioparam;
 			}
-			if (aliases 
-				&& prodesc->arg_argmode[i] != PROARGMODE_OUT 
-				&& argnames[i][0] != '\0')
+			if (aliases && argnames[i][0] != '\0')
 			{
 				/* Deal with argument name */
-				Assert(aliases != NULL);
 				alias_str_end += snprintf(aliases + alias_str_end,
 									 	  NAMEDATALEN + 32,
 							   		 	  " $%s = &$args[%d];", 
-										  argnames[i], j);
+										  argnames[i], i);
 			}
-			if ((prodesc->arg_argmode[i] == PROARGMODE_OUT ||
-				 prodesc->arg_argmode[i] == PROARGMODE_INOUT) &&
-				 argnames[i][0] != '\0')
+			if (prodesc->arg_argmode[i] == PROARGMODE_OUT ||
+				 prodesc->arg_argmode[i] == PROARGMODE_INOUT)
 			{
 				/* Initialiazation for OUT arguments aliases */
 				if (!out_return_str)
@@ -1471,7 +1463,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 					out_return_str = palloc(NAMEDATALEN + 32);
 					if (prodesc->n_out_args + prodesc->n_mixed_args == 1)
 						snprintf(out_return_str, NAMEDATALEN + 32,
-								 "return $%s;", argnames[i]);
+								 "return $args[%d];", i);
 					else
 					{
 						/* PL/PHP deals with multiple OUT arguments by
@@ -1502,10 +1494,8 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 						out_str_end = snprintf(out_aliases,
 						 					   array_namelen +
 											   (2 * NAMEDATALEN + 16) + 16,
-											   "$%s = array('%s' => &$%s",
-											   plphp_ret_array_name,
-											   argnames[i],
-											   argnames[i]);
+											   "$%s = array(&$args[%d]", plphp_ret_array_name, i);
+											   
 					}
 				} 
 				else if (out_aliases)
@@ -1514,8 +1504,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 					Assert(prodesc->n_out_args + prodesc->n_mixed_args > 1);
 					out_str_end += snprintf(out_aliases+out_str_end,
 											2 * NAMEDATALEN + 16,
-											",'%s' => &$%s",
-											argnames[i], argnames[i]);
+											",&$args[%d]", i);
 				}
 			}
 		}
@@ -1607,8 +1596,6 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo TSRMLS_DC)
 	MAKE_STD_ZVAL(retval);
 	array_init(retval);
 
-	if (desc->n_total_args - desc->n_out_args == 0)
-		return retval;
 	/* 
 	 * The first var iterates over every argument, the second one - over the 
 	 * real ones, i.e. IN or INOUT.
@@ -1616,9 +1603,13 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo TSRMLS_DC)
 	for (i = 0, j = 0; i < desc->n_total_args; 
 		 j = (desc->arg_argmode[i++] != PROARGMODE_OUT) ? j + 1 : j)
 	{
-		/* Skip OUT arguments */
+		/* Assing NULLs to OUT arguments initially */
 		if (desc->arg_argmode[i] == PROARGMODE_OUT)
+		{
+			add_next_index_unset(retval);
 			continue;
+		}
+
 		if (desc->arg_typtype[i] == TYPTYPE_PSEUDO)
 		{
 			HeapTuple	typeTup;
@@ -1753,7 +1744,7 @@ plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo TSRMLS_DC)
 	REPORT_PHP_MEMUSAGE("args built. Now the rest ...");
 
 	MAKE_STD_ZVAL(argc);
-	ZVAL_LONG(argc, (desc->n_total_args - desc->n_out_args));
+	ZVAL_LONG(argc, desc->n_total_args);
 	zend_hash_update(symbol_table, "argc", strlen("argc") + 1,
 					 (void *) &argc, sizeof(zval *), NULL);
 
