@@ -150,7 +150,9 @@ PG_MODULE_MAGIC;
 #define TYPTYPE_COMPOSITE 'c'
 #endif
 
-
+/* Check the argument type to expect to accept an initial value */
+#define IS_ARGMODE_OUT(mode) ((mode) == PROARGMODE_OUT || \
+(mode) == PROARGMODE_TABLE)
 /*
  * Return types.  Why on earth is this a bitmask?  Beats me.
  * We should have separate flags instead.
@@ -1598,13 +1600,13 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo TSRMLS_DC)
 
 	/* 
 	 * The first var iterates over every argument, the second one - over the 
-	 * real ones, i.e. IN or INOUT.
+	 * IN or INOUT ones only
 	 */
 	for (i = 0, j = 0; i < desc->n_total_args; 
-		 j = (desc->arg_argmode[i++] != PROARGMODE_OUT) ? j + 1 : j)
+		 j = IS_ARGMODE_OUT(desc->arg_argmode[i++]) ? j : j + 1)
 	{
-		/* Assing NULLs to OUT arguments initially */
-		if (desc->arg_argmode[i] == PROARGMODE_OUT)
+		/* Assing NULLs to OUT or TABLE arguments initially */
+		if (IS_ARGMODE_OUT(desc->arg_argmode[i]))
 		{
 			add_next_index_unset(retval);
 			continue;
