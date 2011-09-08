@@ -1455,8 +1455,8 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 							   		 	  " $%s = &$args[%d];", 
 										  argnames[i], i);
 			}
-			if (prodesc->arg_argmode[i] == PROARGMODE_OUT ||
-				 prodesc->arg_argmode[i] == PROARGMODE_INOUT)
+			if ((prodesc->arg_argmode[i] == PROARGMODE_OUT ||
+				 prodesc->arg_argmode[i] == PROARGMODE_INOUT) && !prodesc->retset)
 			{
 				/* Initialiazation for OUT arguments aliases */
 				if (!out_return_str)
@@ -1496,7 +1496,8 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 						out_str_end = snprintf(out_aliases,
 						 					   array_namelen +
 											   (2 * NAMEDATALEN + 16) + 16,
-											   "$%s = array(&$args[%d]", plphp_ret_array_name, i);
+											   "$%s = array(&$args[%d]", 
+											   plphp_ret_array_name, i);
 											   
 					}
 				} 
@@ -1514,7 +1515,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 			strcat(aliases, " ");
 		if (out_aliases)
 			strcat(out_aliases, ")");
-			
+
 		/*
 		 * Create the text of the PHP function.  We do not use the same
 		 * function name, because that would prevent function overloading.
