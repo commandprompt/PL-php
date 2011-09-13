@@ -1316,6 +1316,12 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		 */
 		if (!is_trigger)
 		{
+			char  **argnames;
+			char   *argmodes;
+			Oid    *argtypes;
+			int32	alias_str_end,
+					out_str_end;
+
 			typtype = get_typtype(procStruct->prorettype);
 			get_type_io_data(procStruct->prorettype,
 							 IOFunc_input,
@@ -1380,14 +1386,6 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 
 			perm_fmgr_info(typinput, &(prodesc->result_in_func));
 			prodesc->result_typioparam = typioparam;
-		}
-		else
-		{
-			char  **argnames;
-			char   *argmodes;
-			Oid    *argtypes;
-			int32	alias_str_end,
-					out_str_end;
 
 			/* Deal with named arguments, OUT, IN/OUT and TABLE arguments */
 
