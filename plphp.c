@@ -223,7 +223,6 @@ static StringInfo currmsg = NULL;
  * errhint, etc as well.
  */
 static char *error_msg = NULL;
-
 /*
  * Forward declarations
  */
@@ -1413,7 +1412,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 					case PROARGMODE_IN:
 						break;
 					case PROARGMODE_TABLE:
-						elog(ERROR, "Table arguments are not supported");
+						break;
 					case PROARGMODE_VARIADIC:
 						elog(ERROR, "VARIADIC arguments are not supported");
 					default:
@@ -1766,12 +1765,16 @@ plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo TSRMLS_DC)
 	orig_symbol_table = EG(active_symbol_table);
 	EG(active_symbol_table) = symbol_table;
 
+	saved_symbol_table = EG(active_symbol_table);
+
 	/* XXX: why no_separation param is 1 is this call ? */
 	if (call_user_function_ex(CG(function_table), NULL, funcname, &retval,
-							  2, params, 1, NULL TSRMLS_CC) == FAILURE)
+							  2, params, 1, symbol_table TSRMLS_CC) == FAILURE)
 		elog(ERROR, "could not call function \"%s\"", call);
 
 	REPORT_PHP_MEMUSAGE("going to free some vars");
+
+	saved_symbol_table = NULL;
 
 	/* Return to the original symbol table, and clean our private one */
 	EG(active_symbol_table) = orig_symbol_table;

@@ -75,6 +75,11 @@ MemoryContext current_memcxt = NULL;
 Tuplestorestate *current_tuplestore = NULL;
 
 
+/* A symbol table to save for return_next for the RETURNS TABLE case */
+HashTable *saved_symbol_table;
+
+static zval *get_table_arguments(AttInMetadata *attinmeta);
+
 /*
  * spi_exec
  * 		PL/php equivalent to SPI_exec().
@@ -444,13 +449,20 @@ ZEND_FUNCTION(return_next)
 
 	Assert(current_tupledesc != NULL);
 	Assert(rsi != NULL);
-
-	if (ZEND_NUM_ARGS() != 1)
+	
+	if (ZEND_NUM_ARGS() > 1)
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("wrong number of arguments to %s", "return_next")));
 
-	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z",
+	if (ZEND_NUM_ARGS() == 0)
+	{
+		/* 
+		 * Called from the function declared with RETURNS TABLE 
+	     */
+		param = get_table_arguments(current_attinmeta);
+	}
+	else if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z",
 							  &param) == FAILURE)
 	{
 		zend_error(E_WARNING, "cannot parse parameters in %s",
@@ -491,6 +503,40 @@ php_SPIresult_destroy(zend_rsrc_list_entry *rsrc TSRMLS_DC)
 
 	free(res);
 }
+
+/* Return an array of TABLE argument values for return_next */
+static
+zval *get_table_arguments(AttInMetadata *attinmeta)
+{
+	zval   *retval = NULL;
+	int		i;
+	
+	MAKE_STD_ZVAL(retval);
+	array_init(retval);
+
+	Assert(attinmeta->tupdesc);
+	Assert(saved_symbol_table != NULL);
+	/* Extract OUT argument names */
+	for (i = 0; i < attinmeta->tupdesc->natts; i++)
+	{
+		zval 	**val;
+		char 	*attname;
+
+		Assert(!attinmeta->tupdesc->attrs[i]->attisdropped);
+
+		attname = NameStr(attinmeta->tupdesc->attrs[i]->attname);
+
+		if (zend_hash_find(saved_symbol_table, 
+						   attname, strlen(attname) + 1,
+						   (void **)&val) == SUCCESS)
+
+			add_next_index_zval(retval, *val);
+		else
+			add_next_index_unset(retval);
+	} 
+	return retval;
+}
+
 
 /*
  * vim:ts=4:sw=4:cino=(0

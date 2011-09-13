@@ -36,4 +36,5 @@ char *plphp_zval_get_cstring(zval *val, bool do_array, bool null_ok);
 zval *plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc);
 HeapTuple plphp_modify_tuple(zval *outdata, TriggerData *tdata);
 
+
 #endif /* PLPHP_IO_H */

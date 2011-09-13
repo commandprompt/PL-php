@@ -30,6 +30,7 @@ extern TupleDesc current_tupledesc;
 extern AttInMetadata *current_attinmeta;
 extern MemoryContext current_memcxt;
 extern Tuplestorestate *current_tuplestore;
+extern HashTable *saved_symbol_table;
 
 /*
  * Definition for PHP "resource" result type from SPI_execute.
