@@ -1246,9 +1246,6 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		HeapTuple	langTup;
 		Form_pg_language langStruct;
 		Datum		prosrcdatum;
-		Oid			*argtypes;
-		char		**argnames;
-		char		*argmodes;
 		bool		isnull;
 		char	   *proc_source;
 		char	   *complete_proc_source;
@@ -1264,9 +1261,6 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 		Oid		typioparam,
 				typinput,
 				typoutput;
-		int32	alias_str_end,
-				out_str_end;
-		alias_str_end = out_str_end = 0;	
 		/*
 		 * Allocate a new procedure description block
 		 */
@@ -1387,133 +1381,145 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 			perm_fmgr_info(typinput, &(prodesc->result_in_func));
 			prodesc->result_typioparam = typioparam;
 		}
+		else
+		{
+			char  **argnames;
+			char   *argmodes;
+			Oid    *argtypes;
+			int32	alias_str_end,
+					out_str_end;
 
-		prodesc->n_total_args = get_func_arg_info(procTup, &argtypes, 
-										  		  &argnames, &argmodes);
-		prodesc->n_out_args = 0;
-		prodesc->n_mixed_args = 0;
-		
-		prodesc->args_out_tupdesc = NULL;
-		out_return_str = NULL;
-		/* Count the number of OUT arguments. Need to do this out of the
-		 * main loop, to correctly determine the object to return for OUT args
-	     */
-		if (argmodes)
+			/* Deal with named arguments, OUT, IN/OUT and TABLE arguments */
+
+			prodesc->n_total_args = get_func_arg_info(procTup, &argtypes, 
+											  		  &argnames, &argmodes);
+			prodesc->n_out_args = 0;
+			prodesc->n_mixed_args = 0;
+			
+			prodesc->args_out_tupdesc = NULL;
+			out_return_str = NULL;
+			alias_str_end = out_str_end = 0;
+
+			/* Count the number of OUT arguments. Need to do this out of the
+			 * main loop, to correctly determine the object to return for OUT args
+		     */
+			if (argmodes)
+				for (i = 0; i < prodesc->n_total_args; i++)
+				{
+					switch(argmodes[i])
+					{
+						case PROARGMODE_OUT: 
+							prodesc->n_out_args++;
+							break;
+						case PROARGMODE_INOUT: 
+							prodesc->n_mixed_args++;
+							break;
+						case PROARGMODE_IN:
+							break;
+						case PROARGMODE_TABLE:
+							break;
+						case PROARGMODE_VARIADIC:
+							elog(ERROR, "VARIADIC arguments are not supported");
+						default:
+							elog(ERROR, "Unsupported type %c for argument no %d",
+								 argmodes[i], i);
+					}					
+					prodesc->arg_argmode[i] = argmodes[i];
+				}
+			else
+				MemSet(prodesc->arg_argmode, PROARGMODE_IN,
+				 	   prodesc->n_total_args);
+
+			/* Allocate memory for argument names unless all of them are OUT*/
+			if (argnames && prodesc->n_total_args > 0)
+				aliases = palloc((NAMEDATALEN + 32) * prodesc->n_total_args);
+			
+			/* Main argument processing loop. */
 			for (i = 0; i < prodesc->n_total_args; i++)
 			{
-				switch(argmodes[i])
+				prodesc->arg_typtype[i] = get_typtype(argtypes[i]);
+				if (prodesc->arg_typtype[i] != TYPTYPE_COMPOSITE)
+				{							
+					get_type_io_data(argtypes[i],
+									 IOFunc_output,
+									 &typlen,
+									 &typbyval,
+									 &typalign,
+									 &typdelim,
+									 &typioparam,
+									 &typoutput);
+					perm_fmgr_info(typoutput, &(prodesc->arg_out_func[i]));
+					prodesc->arg_typioparam[i] = typioparam;
+				}
+				if (aliases && argnames[i][0] != '\0')
 				{
-					case PROARGMODE_OUT: 
-						prodesc->n_out_args++;
-						break;
-					case PROARGMODE_INOUT: 
-						prodesc->n_mixed_args++;
-						break;
-					case PROARGMODE_IN:
-						break;
-					case PROARGMODE_TABLE:
-						break;
-					case PROARGMODE_VARIADIC:
-						elog(ERROR, "VARIADIC arguments are not supported");
-					default:
-						elog(ERROR, "Unsupported type %c for argument no %d",
-							 argmodes[i], i);
-				}					
-				prodesc->arg_argmode[i] = argmodes[i];
-			}
-		else
-			MemSet(prodesc->arg_argmode, PROARGMODE_IN,
-			 	   prodesc->n_total_args);
-
-		/* Allocate memory for argument names unless all of them are OUT*/
-		if (argnames && prodesc->n_total_args > 0)
-			aliases = palloc((NAMEDATALEN + 32) * prodesc->n_total_args);
-		
-		/* Main argument processing loop. */
-		for (i = 0; i < prodesc->n_total_args; i++)
-		{
-			prodesc->arg_typtype[i] = get_typtype(argtypes[i]);
-			if (prodesc->arg_typtype[i] != TYPTYPE_COMPOSITE)
-			{							
-				get_type_io_data(argtypes[i],
-								 IOFunc_output,
-								 &typlen,
-								 &typbyval,
-								 &typalign,
-								 &typdelim,
-								 &typioparam,
-								 &typoutput);
-				perm_fmgr_info(typoutput, &(prodesc->arg_out_func[i]));
-				prodesc->arg_typioparam[i] = typioparam;
-			}
-			if (aliases && argnames[i][0] != '\0')
-			{
-				/* Deal with argument name */
-				alias_str_end += snprintf(aliases + alias_str_end,
-									 	  NAMEDATALEN + 32,
-							   		 	  " $%s = &$args[%d];", 
-										  argnames[i], i);
-			}
-			if ((prodesc->arg_argmode[i] == PROARGMODE_OUT ||
-				 prodesc->arg_argmode[i] == PROARGMODE_INOUT) && !prodesc->retset)
-			{
-				/* Initialiazation for OUT arguments aliases */
-				if (!out_return_str)
+					/* Deal with argument name */
+					alias_str_end += snprintf(aliases + alias_str_end,
+										 	  NAMEDATALEN + 32,
+								   		 	  " $%s = &$args[%d];", 
+											  argnames[i], i);
+				}
+				if ((prodesc->arg_argmode[i] == PROARGMODE_OUT ||
+					 prodesc->arg_argmode[i] == PROARGMODE_INOUT) && !prodesc->retset)
 				{
-					/* Generate return statment for a single OUT argument */
-					out_return_str = palloc(NAMEDATALEN + 32);
-					if (prodesc->n_out_args + prodesc->n_mixed_args == 1)
-						snprintf(out_return_str, NAMEDATALEN + 32,
-								 "return $args[%d];", i);
-					else
+					/* Initialiazation for OUT arguments aliases */
+					if (!out_return_str)
 					{
-						/* PL/PHP deals with multiple OUT arguments by
-						 * internally creating an array of references to them.
-						 * E.g. out_fn(a out integer, b out integer )
-						 * translates into:
-						 * $_plphp_ret_out_fn_1234=array(a => $&a,b => $&b);
-						 */
-						char plphp_ret_array_name[NAMEDATALEN + 16];
+						/* Generate return statment for a single OUT argument */
+						out_return_str = palloc(NAMEDATALEN + 32);
+						if (prodesc->n_out_args + prodesc->n_mixed_args == 1)
+							snprintf(out_return_str, NAMEDATALEN + 32,
+									 "return $args[%d];", i);
+						else
+						{
+							/* PL/PHP deals with multiple OUT arguments by
+							 * internally creating an array of references to them.
+							 * E.g. out_fn(a out integer, b out integer )
+							 * translates into:
+							 * $_plphp_ret_out_fn_1234=array(a => $&a,b => $&b);
+							 */
+							char plphp_ret_array_name[NAMEDATALEN + 16];
 
-						int array_namelen = snprintf(plphp_ret_array_name,
-						 						 	 NAMEDATALEN + 16,
-								 				 	 "_plphp_ret_%s",
-												 	 internal_proname);
+							int array_namelen = snprintf(plphp_ret_array_name,
+							 						 	 NAMEDATALEN + 16,
+									 				 	 "_plphp_ret_%s",
+													 	 internal_proname);
 
-						snprintf(out_return_str, array_namelen + 16,
-								"return $%s;", plphp_ret_array_name);
-								
-						/* 2 NAMEDATALEN for argument names, additional
-						 * 16 bytes per each argument for assignment string,
-						 * additional 16 bytes for the 'array' prefix string.
-						 */		
-						out_aliases = palloc(array_namelen +
-											 (prodesc->n_out_args + 
-											  prodesc->n_mixed_args) *
-											 (2*NAMEDATALEN + 16) + 16);
-											
-						out_str_end = snprintf(out_aliases,
-						 					   array_namelen +
-											   (2 * NAMEDATALEN + 16) + 16,
-											   "$%s = array(&$args[%d]", 
-											   plphp_ret_array_name, i);
-											   
+							snprintf(out_return_str, array_namelen + 16,
+									"return $%s;", plphp_ret_array_name);
+									
+							/* 2 NAMEDATALEN for argument names, additional
+							 * 16 bytes per each argument for assignment string,
+							 * additional 16 bytes for the 'array' prefix string.
+							 */		
+							out_aliases = palloc(array_namelen +
+												 (prodesc->n_out_args + 
+												  prodesc->n_mixed_args) *
+												 (2*NAMEDATALEN + 16) + 16);
+												
+							out_str_end = snprintf(out_aliases,
+							 					   array_namelen +
+												   (2 * NAMEDATALEN + 16) + 16,
+												   "$%s = array(&$args[%d]", 
+												   plphp_ret_array_name, i);
+												   
+						}
+					} 
+					else if (out_aliases)
+					{
+					   /* Add new elements to the array of aliases for OUT args */
+						Assert(prodesc->n_out_args + prodesc->n_mixed_args > 1);
+						out_str_end += snprintf(out_aliases+out_str_end,
+												2 * NAMEDATALEN + 16,
+												",&$args[%d]", i);
 					}
-				} 
-				else if (out_aliases)
-				{
-				   /* Add new elements to the array of aliases for OUT args */
-					Assert(prodesc->n_out_args + prodesc->n_mixed_args > 1);
-					out_str_end += snprintf(out_aliases+out_str_end,
-											2 * NAMEDATALEN + 16,
-											",&$args[%d]", i);
 				}
 			}
+			if (aliases)
+				strcat(aliases, " ");
+			if (out_aliases)
+				strcat(out_aliases, ")");
 		}
-		if (aliases)
-			strcat(aliases, " ");
-		if (out_aliases)
-			strcat(out_aliases, ")");
 
 		/*
 		 * Create the text of the PHP function.  We do not use the same
