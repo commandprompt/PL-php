@@ -57,8 +57,8 @@ select * from retset4(10, 3);
 -- Do we support OUT params?
 create function retset5(out int, out int, int, int)
 language plphp as $$
-	for ($i = 1; $i <= $args[0]; $i++) {
-		return_next($args[1] * $i);
+	for ($i = 1; $i <= $args[2]; $i++) {
+		return_next($args[3] * $i);
 	}
 $$;
 select * from retset5(5, 2);
