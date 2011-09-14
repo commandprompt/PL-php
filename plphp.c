@@ -1607,7 +1607,7 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo TSRMLS_DC)
 	 * IN or INOUT ones only
 	 */
 	for (i = 0, j = 0; i < desc->n_total_args; 
-		 j = IS_ARGMODE_OUT(desc->arg_argmode[i++]) ? j : j + 1)
+		 (j = IS_ARGMODE_OUT(desc->arg_argmode[i]) ? j : j + 1), i++)
 	{
 		/* Assing NULLs to OUT or TABLE arguments initially */
 		if (IS_ARGMODE_OUT(desc->arg_argmode[i]))
