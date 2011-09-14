@@ -435,11 +435,9 @@ ZEND_FUNCTION(return_next)
 	
 	/*
 	 * Disallow use of return_next inside non-SRF functions
-	 *
-	 * XXX -- this error message is incorrect in presence of IN/OUT
-	 * parameter usage.  Behave better here in the future.
 	 */
-	if (current_fcinfo == NULL)
+	if (current_fcinfo == NULL || current_fcinfo->flinfo == NULL || 
+		!current_fcinfo->flinfo->fn_retset)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot use return_next in functions not declared to "
