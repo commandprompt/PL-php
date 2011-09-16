@@ -255,6 +255,7 @@ static zval *plphp_call_php_trig(plphp_proc_desc *desc,
 
 static void plphp_error_cb(int type, const char *filename, const uint lineno,
 								  const char *fmt, va_list args);
+static bool is_valid_php_identifier(char *name);
 
 /*
  * FIXME -- this comment is quite misleading actually, which is not surprising
@@ -1451,6 +1452,9 @@ plphp_compile_function(Oid fnoid, bool is_trigger TSRMLS_DC)
 				}
 				if (aliases && argnames[i][0] != '\0')
 				{
+					if (!is_valid_php_identifier(argnames[i]))
+						elog(ERROR, "\"%s\" can not be used as a PHP variable name",
+							 argnames[i]);
 					/* Deal with argument name */
 					alias_str_end += snprintf(aliases + alias_str_end,
 										 	  NAMEDATALEN + 32,
@@ -1916,6 +1920,29 @@ plphp_error_cb(int type, const char *filename, const uint lineno,
 
 	ereport(elevel,
 			(errmsg("plphp: %s", str)));
+}
+
+/* Check if the name can be a valid PHP variable name */
+static bool 
+is_valid_php_identifier(char *name)
+{
+	int 	len,
+			i;
+	
+	Assert(name);
+
+	len = strlen(name);
+
+	/* Should start from the letter */
+	if (!isalpha(name[0]))
+		return false;
+	for (i = 1; i < len; i++)
+	{
+		/* Only letters, digits and underscores are allowed */
+		if (!isalpha(name[i]) && !isdigit(name[i]) && name[i] != '_')
+			return false;
+	}
+	return true;
 }
 
 /*
