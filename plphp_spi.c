@@ -179,7 +179,7 @@ ZEND_FUNCTION(spi_exec)
 		SPI_restore_connection();
 
 		/* bail PHP out */
-		zend_error(E_ERROR, strdup(edata->message));
+		zend_error(E_ERROR, "%s", strdup(edata->message));
 
 		/* Can't get here, but keep compiler quiet */
 		return;
@@ -419,7 +419,7 @@ ZEND_FUNCTION(pg_raise)
 	else
 		zend_error(E_ERROR, "incorrect log level");
 
-	zend_error(elevel, message);
+	zend_error(elevel, "%s", message);
 }
 
 /*
