@@ -49,6 +49,7 @@
 #include "postgres.h"
 #include "access/heapam.h"
 #include "access/transam.h"
+#include "access/htup_details.h"
 
 #include "catalog/catversion.h"
 #include "catalog/pg_language.h"
@@ -566,7 +567,7 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 				desc = plphp_compile_function(fcinfo->flinfo->fn_oid, true TSRMLS_CC);
 
 				/* Activate PHP safe mode if needed */
-				PG(safe_mode) = desc->trusted;
+				//PG(safe_mode) = desc->trusted;
 
 				retval = plphp_trigger_handler(fcinfo, desc TSRMLS_CC);
 			}
@@ -575,7 +576,7 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 				desc = plphp_compile_function(fcinfo->flinfo->fn_oid, false TSRMLS_CC);
 
 				/* Activate PHP safe mode if needed */
-				PG(safe_mode) = desc->trusted;
+				//PG(safe_mode) = desc->trusted;
 
 				if (desc->retset)
 					retval = plphp_srf_handler(fcinfo, desc TSRMLS_CC);

@@ -20,6 +20,7 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/memutils.h"
+#include "access/htup_details.h"
 
 /*
  * plphp_zval_from_tuple
