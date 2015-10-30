@@ -40,6 +40,7 @@
 
 /* PostgreSQL stuff */
 #include "access/xact.h"
+#include "access/htup_details.h"
 #include "miscadmin.h"
 
 #undef DEBUG_PLPHP_MEMORY
