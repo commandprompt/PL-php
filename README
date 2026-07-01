@@ -1,8 +1,51 @@
-PL/php is a procedural language add-on for PostgreSQL.
+PL/php - PHP as a procedural language for PostgreSQL
+====================================================
 
-It allows you to create PHP functions that are stored inside a PostgreSQL
-database server.  They can then be used as stored procedures.  They have
-many of the functionalities of a standard PostgreSQL function, and you
-can use them to write triggers, set-returning functions, and plain functions
-that would just be too complex or cumbersome to write in PL/pgSQL.
+PL/php lets you write PostgreSQL functions in PHP.  Stored inside the database,
+they can be used as plain functions, set-returning functions, and triggers,
+with much of the power of a native PostgreSQL function plus the convenience of
+PHP's standard library.
 
+This is release 2.0, modernized for current software:
+
+  * PostgreSQL 18 (also builds on PostgreSQL 16).
+  * PHP 8 Zend API (tested with PHP 8.3), using the embed SAPI.
+  * Installed the modern way, as an extension: CREATE EXTENSION plphp;
+    (an untrusted, superuser-only language -- see the SECURITY NOTE below).
+
+See INSTALL for build/install instructions and doc/plphp.md for the language
+reference.  HISTORY lists what changed in each release.
+
+
+Quick example
+-------------
+
+    CREATE EXTENSION plphp;
+
+    CREATE FUNCTION hello(text) RETURNS text LANGUAGE plphp AS $$
+        return "Hello, {$args[0]}!";
+    $$;
+
+    SELECT hello('world');   -- Hello, world!
+
+
+Requirements
+------------
+
+  * PostgreSQL 16 or newer, with server development files (pg_config).
+  * PHP 8.x built with the embed SAPI and *without* ZTS (thread safety).
+    On Debian/Ubuntu: the php8.x-dev and libphp8.x-embed packages.
+
+See INSTALL for details.
+
+
+SECURITY NOTE
+-------------
+
+PL/php is an UNTRUSTED language.  On historical PHP the trusted variant relied
+on PHP's "safe_mode" to sandbox user code, but safe_mode was removed in PHP 5.4,
+so nothing sandboxes PHP today: a function can do anything the PostgreSQL
+server's OS user can do (read files, open sockets, run shell commands, etc.).
+For that reason the language is created without the TRUSTED attribute and only
+superusers can create PL/php functions.  Do not grant that ability to roles you
+would not trust with the server's operating-system account.

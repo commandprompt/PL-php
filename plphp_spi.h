@@ -38,8 +38,8 @@ extern HashTable *saved_symbol_table;
 typedef struct
 {
 	SPITupleTable  *SPI_tuptable;
-	uint32			SPI_processed;
-	uint32			current_row;
+	uint64			SPI_processed;	/* SPI_processed is uint64 since PG 11 */
+	uint64			current_row;
 	int				status;
 } php_SPIresult;
 
@@ -51,7 +51,7 @@ ZEND_FUNCTION(spi_rewind);
 ZEND_FUNCTION(pg_raise);
 ZEND_FUNCTION(return_next);
 
-void php_SPIresult_destroy(zend_rsrc_list_entry *rsrc TSRMLS_DC);
+void php_SPIresult_destroy(zend_resource *rsrc);
 
 #endif /* PLPHP_SPI_H */
 

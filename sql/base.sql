@@ -163,10 +163,10 @@ select foo(1);
 -- test recursive functions
 create function php_fib(int) returns int language plphp as $$
   if ($args[0] <= 1) { return 1; }
-  $r = spi_exec("select php_fib(${args[0]} - 1) as a");
+  $r = spi_exec("select php_fib({$args[0]} - 1) as a");
   $row = spi_fetch_row($r);
   $a = $row['a'];
-  $r = spi_exec("select php_fib(${args[0]} - 2) as b");
+  $r = spi_exec("select php_fib({$args[0]} - 2) as b");
   $row = spi_fetch_row($r);
   $b = $row['b'];
   return $a + $b;

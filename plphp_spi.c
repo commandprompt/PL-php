@@ -39,32 +39,56 @@
 #include "php.h"
 
 /* PostgreSQL stuff */
+#include "access/htup_details.h"
 #include "access/xact.h"
 #include "miscadmin.h"
+#include "utils/memutils.h"
 
 #undef DEBUG_PLPHP_MEMORY
 
 #ifdef DEBUG_PLPHP_MEMORY
 #define REPORT_PHP_MEMUSAGE(where) \
-	elog(NOTICE, "PHP mem usage: «%s»: %u", where, AG(allocated_memory));
+	elog(NOTICE, "PHP mem usage: %s: %zu", where, zend_memory_usage(0));
 #else
-#define REPORT_PHP_MEMUSAGE(a) 
+#define REPORT_PHP_MEMUSAGE(a)
 #endif
 
 /* resource type Id for SPIresult */
 int SPIres_rtype;
 
+/*
+ * Argument metadata for the PHP-callable functions.  PHP 8 requires internal
+ * functions to carry arg_info, so we provide minimal, permissive descriptors.
+ */
+ZEND_BEGIN_ARG_INFO_EX(arginfo_spi_exec, 0, 0, 1)
+	ZEND_ARG_INFO(0, query)
+	ZEND_ARG_INFO(0, limit)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_spi_result, 0, 0, 1)
+	ZEND_ARG_INFO(0, result)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_pg_raise, 0, 0, 2)
+	ZEND_ARG_INFO(0, level)
+	ZEND_ARG_INFO(0, message)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_return_next, 0, 0, 0)
+	ZEND_ARG_INFO(0, value)
+ZEND_END_ARG_INFO()
+
 /* SPI function table */
 zend_function_entry spi_functions[] =
 {
-	ZEND_FE(spi_exec, NULL)
-	ZEND_FE(spi_fetch_row, NULL)
-	ZEND_FE(spi_processed, NULL)
-	ZEND_FE(spi_status, NULL)
-	ZEND_FE(spi_rewind, NULL)
-	ZEND_FE(pg_raise, NULL)
-	ZEND_FE(return_next, NULL)
-	{NULL, NULL, NULL}
+	ZEND_FE(spi_exec, arginfo_spi_exec)
+	ZEND_FE(spi_fetch_row, arginfo_spi_result)
+	ZEND_FE(spi_processed, arginfo_spi_result)
+	ZEND_FE(spi_status, arginfo_spi_result)
+	ZEND_FE(spi_rewind, arginfo_spi_result)
+	ZEND_FE(pg_raise, arginfo_pg_raise)
+	ZEND_FE(return_next, arginfo_return_next)
+	ZEND_FE_END
 };
 
 /* SRF support: */
@@ -97,45 +121,21 @@ static zval *get_table_arguments(AttInMetadata *attinmeta);
 ZEND_FUNCTION(spi_exec)
 {
 	char	   *query;
-	int			query_len;
+	size_t		query_len;
 	long		status;
-	long		limit;
+	zend_long	limit = 0;
 	php_SPIresult *SPIres;
-	int			spi_id;
 	MemoryContext oldcontext = CurrentMemoryContext;
 	ResourceOwner oldowner = CurrentResourceOwner;
 
 	REPORT_PHP_MEMUSAGE("spi_exec called");
 
-	if ((ZEND_NUM_ARGS() > 2) || (ZEND_NUM_ARGS() < 1))
-		WRONG_PARAM_COUNT;
-
 	/* Parse arguments */
-	if (ZEND_NUM_ARGS() == 2)
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "s|l",
+							  &query, &query_len, &limit) == FAILURE)
 	{
-		if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "sl",
-								  &query, &query_len, &limit) == FAILURE)
-		{
-			zend_error(E_WARNING, "Can not parse parameters in %s",
-					   get_active_function_name(TSRMLS_C));
-			RETURN_FALSE;
-		}
-	}
-	else if (ZEND_NUM_ARGS() == 1)
-	{
-		if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
-								  &query, &query_len) == FAILURE)
-		{
-			zend_error(E_WARNING, "Can not parse parameters in %s",
-					   get_active_function_name(TSRMLS_C));
-			RETURN_FALSE;
-		}
-		limit = 0;
-	}
-	else
-	{
-		zend_error(E_WARNING, "Incorrect number of parameters to %s",
-				   get_active_function_name(TSRMLS_C));
+		zend_error(E_WARNING, "Can not parse parameters in %s",
+				   get_active_function_name());
 		RETURN_FALSE;
 	}
 
@@ -150,12 +150,6 @@ ZEND_FUNCTION(spi_exec)
 		ReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(oldcontext);
 		CurrentResourceOwner = oldowner;
-
-		/*
-		 * AtEOSubXact_SPI() should not have popped any SPI context, but just
-		 * in case it did, make sure we remain connected.
-		 */
-		SPI_restore_connection();
 	}
 	PG_CATCH();
 	{
@@ -166,20 +160,13 @@ ZEND_FUNCTION(spi_exec)
 		edata = CopyErrorData();
 		FlushErrorState();
 
-		/* Abort the inner trasaction */
+		/* Abort the inner transaction */
 		RollbackAndReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(oldcontext);
 		CurrentResourceOwner = oldowner;
 
-		/*
-		 * If AtEOSubXact_SPI() popped any SPI context of the subxact, it will
-		 * have left us in a disconnected state.  We need this hack to return
-		 * to connected state.
-		 */
-		SPI_restore_connection();
-
 		/* bail PHP out */
-		zend_error(E_ERROR, "%s", strdup(edata->message));
+		zend_error(E_ERROR, "%s", edata->message);
 
 		/* Can't get here, but keep compiler quiet */
 		return;
@@ -205,12 +192,7 @@ ZEND_FUNCTION(spi_exec)
 	REPORT_PHP_MEMUSAGE("spi_exec: creating resource");
 
 	/* Register the resource to PHP so it will be able to free it */
-	spi_id = ZEND_REGISTER_RESOURCE(return_value, (void *) SPIres,
-					 				SPIres_rtype);
-
-	REPORT_PHP_MEMUSAGE("spi_exec: returning");
-
-	RETURN_RESOURCE(spi_id);
+	RETURN_RES(zend_register_resource((void *) SPIres, SPIres_rtype));
 }
 
 /*
@@ -219,36 +201,26 @@ ZEND_FUNCTION(spi_exec)
  *
  * This function receives a resource Id and returns a PHP hash representing the
  * next tuple in the result, or false if no tuples remain.
- *
- * XXX Apparently this is leaking memory.  How do we tell PHP to free the tuple
- * once the user is done with it?
  */
 ZEND_FUNCTION(spi_fetch_row)
 {
-	zval	   *row = NULL;
-	zval	  **z_spi = NULL;
+	zval	   *z_spi = NULL;
+	zval	   *row;
 	php_SPIresult	*SPIres;
 
 	REPORT_PHP_MEMUSAGE("spi_fetch_row: called");
 
-	if (ZEND_NUM_ARGS() != 1)
-		WRONG_PARAM_COUNT;
-
-	if (zend_get_parameters_ex(1, &z_spi) == FAILURE)
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "r", &z_spi) == FAILURE)
 	{
 		zend_error(E_WARNING, "Can not parse parameters in %s",
-				   get_active_function_name(TSRMLS_C));
-		RETURN_FALSE;
-	}
-	if (z_spi == NULL)
-	{
-		zend_error(E_WARNING, "Could not get SPI resource in %s",
-				   get_active_function_name(TSRMLS_C));
+				   get_active_function_name());
 		RETURN_FALSE;
 	}
 
-	ZEND_FETCH_RESOURCE(SPIres, php_SPIresult *, z_spi, -1, "SPI result",
-						SPIres_rtype);
+	SPIres = (php_SPIresult *) zend_fetch_resource(Z_RES_P(z_spi),
+												   "SPI result", SPIres_rtype);
+	if (SPIres == NULL)
+		RETURN_FALSE;
 
 	if (SPIres->status != SPI_OK_SELECT)
 	{
@@ -259,15 +231,12 @@ ZEND_FUNCTION(spi_fetch_row)
 	if (SPIres->current_row < SPIres->SPI_processed)
 	{
 		row = plphp_zval_from_tuple(SPIres->SPI_tuptable->vals[SPIres->current_row],
-			  						SPIres->SPI_tuptable->tupdesc);
+									SPIres->SPI_tuptable->tupdesc);
 		SPIres->current_row++;
 
-		*return_value = *row;
-
-		zval_copy_ctor(return_value);
-		zval_dtor(row);
-		FREE_ZVAL(row);
-
+		/* Move the freshly built array into return_value and free the shell */
+		ZVAL_COPY_VALUE(return_value, row);
+		efree(row);
 	}
 	else
 		RETURN_FALSE;
@@ -281,33 +250,26 @@ ZEND_FUNCTION(spi_fetch_row)
  */
 ZEND_FUNCTION(spi_processed)
 {
-	zval	   **z_spi = NULL;
+	zval	   *z_spi = NULL;
 	php_SPIresult	*SPIres;
 
 	REPORT_PHP_MEMUSAGE("spi_processed: start");
 
-	if (ZEND_NUM_ARGS() != 1)
-		WRONG_PARAM_COUNT;
-
-	if (zend_get_parameters_ex(1, &z_spi) == FAILURE)
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "r", &z_spi) == FAILURE)
 	{
 		zend_error(E_WARNING, "Cannot parse parameters in %s",
-				   get_active_function_name(TSRMLS_C));
-		RETURN_FALSE;
-	}
-	if (z_spi == NULL)
-	{
-		zend_error(E_WARNING, "Could not get SPI resource in %s",
-				   get_active_function_name(TSRMLS_C));
+				   get_active_function_name());
 		RETURN_FALSE;
 	}
 
-	ZEND_FETCH_RESOURCE(SPIres, php_SPIresult *, z_spi, -1, "SPI result",
-						SPIres_rtype);
+	SPIres = (php_SPIresult *) zend_fetch_resource(Z_RES_P(z_spi),
+												   "SPI result", SPIres_rtype);
+	if (SPIres == NULL)
+		RETURN_FALSE;
 
 	REPORT_PHP_MEMUSAGE("spi_processed: finish");
 
-	RETURN_LONG(SPIres->SPI_processed);
+	RETURN_LONG((zend_long) SPIres->SPI_processed);
 }
 
 /*
@@ -316,38 +278,27 @@ ZEND_FUNCTION(spi_processed)
  */
 ZEND_FUNCTION(spi_status)
 {
-	zval	   **z_spi = NULL;
+	zval	   *z_spi = NULL;
 	php_SPIresult	*SPIres;
 
 	REPORT_PHP_MEMUSAGE("spi_status: start");
 
-	if (ZEND_NUM_ARGS() != 1)
-		WRONG_PARAM_COUNT;
-
-	if (zend_get_parameters_ex(1, &z_spi) == FAILURE)
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "r", &z_spi) == FAILURE)
 	{
 		zend_error(E_WARNING, "Cannot parse parameters in %s",
-				   get_active_function_name(TSRMLS_C));
-		RETURN_FALSE;
-	}
-	if (z_spi == NULL)
-	{
-		zend_error(E_WARNING, "Could not get SPI resource in %s",
-				   get_active_function_name(TSRMLS_C));
+				   get_active_function_name());
 		RETURN_FALSE;
 	}
 
-	ZEND_FETCH_RESOURCE(SPIres, php_SPIresult *, z_spi, -1, "SPI result",
-						SPIres_rtype);
+	SPIres = (php_SPIresult *) zend_fetch_resource(Z_RES_P(z_spi),
+												   "SPI result", SPIres_rtype);
+	if (SPIres == NULL)
+		RETURN_FALSE;
 
 	REPORT_PHP_MEMUSAGE("spi_status: finish");
 
-	/*
-	 * XXX The cast is wrong, but we use it to prevent a compiler warning.
-	 * Note that the second parameter to RETURN_STRING is "duplicate", so
-	 * we are returning a copy of the string anyway.
-	 */
-	RETURN_STRING((char *) SPI_result_code_string(SPIres->status), true);
+	/* RETURN_STRING copies the string in PHP 7+ */
+	RETURN_STRING(SPI_result_code_string(SPIres->status));
 }
 
 /*
@@ -357,27 +308,20 @@ ZEND_FUNCTION(spi_status)
  */
 ZEND_FUNCTION(spi_rewind)
 {
-	zval	   **z_spi = NULL;
+	zval	   *z_spi = NULL;
 	php_SPIresult	*SPIres;
 
-	if (ZEND_NUM_ARGS() != 1)
-		WRONG_PARAM_COUNT;
-
-	if (zend_get_parameters_ex(1, &z_spi) == FAILURE)
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "r", &z_spi) == FAILURE)
 	{
 		zend_error(E_WARNING, "Cannot parse parameters in %s",
-				   get_active_function_name(TSRMLS_C));
-		RETURN_FALSE;
-	}
-	if (z_spi == NULL)
-	{
-		zend_error(E_WARNING, "Could not get SPI resource in %s",
-				   get_active_function_name(TSRMLS_C));
+				   get_active_function_name());
 		RETURN_FALSE;
 	}
 
-	ZEND_FETCH_RESOURCE(SPIres, php_SPIresult *, z_spi, -1, "SPI result",
-						SPIres_rtype);
+	SPIres = (php_SPIresult *) zend_fetch_resource(Z_RES_P(z_spi),
+												   "SPI result", SPIres_rtype);
+	if (SPIres == NULL)
+		RETURN_FALSE;
 
 	SPIres->current_row = 0;
 
@@ -391,23 +335,17 @@ ZEND_FUNCTION(pg_raise)
 {
 	char       *level = NULL,
 			   *message = NULL;
-	int         level_len,
-				message_len,
-				elevel = 0;
+	size_t      level_len,
+				message_len;
+	int			elevel = 0;
 
-	if (ZEND_NUM_ARGS() != 2)
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("wrong number of arguments to %s", "pg_raise")));
-	}
-
-	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "ss",
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "ss",
 							  &level, &level_len,
 							  &message, &message_len) == FAILURE)
 	{
 		zend_error(E_WARNING, "cannot parse parameters in %s",
-				   get_active_function_name(TSRMLS_C));
+				   get_active_function_name());
+		return;
 	}
 
 	if (strcasecmp(level, "ERROR") == 0)
@@ -429,14 +367,15 @@ ZEND_FUNCTION(pg_raise)
 ZEND_FUNCTION(return_next)
 {
 	MemoryContext	oldcxt;
-	zval	   *param;
+	zval	   *param = NULL;
+	bool		free_param = false;
 	HeapTuple	tup;
 	ReturnSetInfo *rsi;
-	
+
 	/*
 	 * Disallow use of return_next inside non-SRF functions
 	 */
-	if (current_fcinfo == NULL || current_fcinfo->flinfo == NULL || 
+	if (current_fcinfo == NULL || current_fcinfo->flinfo == NULL ||
 		!current_fcinfo->flinfo->fn_retset)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -447,7 +386,7 @@ ZEND_FUNCTION(return_next)
 
 	Assert(current_tupledesc != NULL);
 	Assert(rsi != NULL);
-	
+
 	if (ZEND_NUM_ARGS() > 1)
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
@@ -455,16 +394,20 @@ ZEND_FUNCTION(return_next)
 
 	if (ZEND_NUM_ARGS() == 0)
 	{
-		/* 
-		 * Called from the function declared with RETURNS TABLE 
-	     */
+		/*
+		 * Called from the function declared with RETURNS TABLE.  Grab the
+		 * calling PL/php function's symbol table so we can read the OUT/TABLE
+		 * argument variables ($colname) out of it.
+		 */
+		saved_symbol_table = zend_rebuild_symbol_table();
 		param = get_table_arguments(current_attinmeta);
+		free_param = true;
 	}
-	else if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z",
-							  &param) == FAILURE)
+	else if (zend_parse_parameters(ZEND_NUM_ARGS(), "z", &param) == FAILURE)
 	{
 		zend_error(E_WARNING, "cannot parse parameters in %s",
-				   get_active_function_name(TSRMLS_C));
+				   get_active_function_name());
+		return;
 	}
 
 	/* Use the per-query context so that the tuplestore survives */
@@ -482,6 +425,13 @@ ZEND_FUNCTION(return_next)
 	heap_freetuple(tup);
 
 	MemoryContextSwitchTo(oldcxt);
+
+	/* Free the array we built for the RETURNS TABLE case */
+	if (free_param)
+	{
+		zval_ptr_dtor(param);
+		efree(param);
+	}
 }
 
 /*
@@ -492,7 +442,7 @@ ZEND_FUNCTION(return_next)
  * or is overwritten by another resource.
  */
 void
-php_SPIresult_destroy(zend_rsrc_list_entry *rsrc TSRMLS_DC)
+php_SPIresult_destroy(zend_resource *rsrc)
 {
 	php_SPIresult *res = (php_SPIresult *) rsrc->ptr;
 
@@ -506,10 +456,10 @@ php_SPIresult_destroy(zend_rsrc_list_entry *rsrc TSRMLS_DC)
 static
 zval *get_table_arguments(AttInMetadata *attinmeta)
 {
-	zval   *retval = NULL;
+	zval   *retval;
 	int		i;
-	
-	MAKE_STD_ZVAL(retval);
+
+	retval = (zval *) emalloc(sizeof(zval));
 	array_init(retval);
 
 	Assert(attinmeta->tupdesc);
@@ -517,21 +467,34 @@ zval *get_table_arguments(AttInMetadata *attinmeta)
 	/* Extract OUT argument names */
 	for (i = 0; i < attinmeta->tupdesc->natts; i++)
 	{
-		zval 	**val;
-		char 	*attname;
+		Form_pg_attribute att = TupleDescAttr(attinmeta->tupdesc, i);
+		zval   *val;
+		char   *attname;
 
-		Assert(!attinmeta->tupdesc->attrs[i]->attisdropped);
+		Assert(!att->attisdropped);
 
-		attname = NameStr(attinmeta->tupdesc->attrs[i]->attname);
+		attname = NameStr(att->attname);
 
-		if (zend_hash_find(saved_symbol_table, 
-						   attname, strlen(attname) + 1,
-						   (void **)&val) == SUCCESS)
-
-			add_next_index_zval(retval, *val);
+		val = zend_hash_str_find(saved_symbol_table, attname, strlen(attname));
+		if (val != NULL)
+		{
+			/* Symbol-table entries for live locals are indirect CV slots */
+			if (Z_TYPE_P(val) == IS_INDIRECT)
+				val = Z_INDIRECT_P(val);
+			/* The alias variables are references into $args; resolve them */
+			ZVAL_DEREF(val);
+			if (Z_TYPE_P(val) == IS_UNDEF)
+				add_next_index_null(retval);
+			else
+			{
+				/* borrowed from the symbol table -- add a reference */
+				Z_TRY_ADDREF_P(val);
+				add_next_index_zval(retval, val);
+			}
+		}
 		else
-			add_next_index_unset(retval);
-	} 
+			add_next_index_null(retval);
+	}
 	return retval;
 }
 

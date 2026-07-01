@@ -1,0 +1,10 @@
+# PL/php extension
+#
+# PL/php is an UNTRUSTED language: PHP has no sandbox on modern releases
+# (safe_mode was removed in PHP 5.4), so functions run with the privileges of
+# the server's OS user.  The extension is therefore superuser-only to install
+# and the language is created without the TRUSTED attribute.
+comment = 'PL/php procedural language (untrusted)'
+default_version = '2.0'
+module_pathname = '$libdir/plphp'
+relocatable = false

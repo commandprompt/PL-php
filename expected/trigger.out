@@ -12,8 +12,8 @@ CREATE FUNCTION trigfunc() RETURNS trigger LANGUAGE plphp AS $$
 		}
 	}
 	
-	pg_raise('notice', "trigger: ${_TD['name']} table: ${_TD['relname']}, ".
-		 "level: ${_TD['level']} event: ${_TD['when']} ${_TD['event']}$extra");
+	pg_raise('notice', "trigger: {$_TD['name']} table: {$_TD['relname']}, ".
+		 "level: {$_TD['level']} event: {$_TD['when']} {$_TD['event']}$extra");
 $$;
 create table trigfunc_table (a int);
 create trigger trigtest0 before insert on trigfunc_table for each row execute procedure trigfunc();
@@ -65,7 +65,7 @@ NOTICE:  plphp: trigger: trigtest11 table: trigfunc_table, level: STATEMENT even
 CREATE FUNCTION trigfunc2() RETURNS trigger LANGUAGE plphp AS $$
 	$extra = "";
 	
-	pg_raise('notice', "schema: ${_TD['schemaname']} table: ${_TD['relname']}");
+	pg_raise('notice', "schema: {$_TD['schemaname']} table: {$_TD['relname']}");
 $$;
 create schema "the schema" create table "the table" (a int);
 create trigger trig2test after insert on "the schema"."the table" for each row execute procedure trigfunc2();
@@ -119,14 +119,14 @@ CREATE OR REPLACE FUNCTION trigfunc_test1() RETURNS trigger LANGUAGE plphp AS $$
 	return 'MODIFY';
 $$;
 INSERT INTO trigfunc_test1 VALUES (1);
-ERROR:  invalid input syntax for integer: "foobar"
+ERROR:  invalid input syntax for type integer: "foobar"
 -- Make "b" an array
 CREATE OR REPLACE FUNCTION trigfunc_test1() RETURNS trigger LANGUAGE plphp AS $$
 	$_TD['new'] = array('b' => array(1, 2, 3));
 	return 'MODIFY';
 $$;
 INSERT INTO trigfunc_test1 VALUES (1);
-ERROR:  invalid input syntax for integer: "{1,2,3}"
+ERROR:  invalid input syntax for type integer: "{1,2,3}"
 -- What happens if we create a table whose columns are numbers?
 -- Does PHP regular array handling work?
 CREATE TABLE numbers ("0" int, "1" text, "2" float, "3" numeric[]);
@@ -177,7 +177,6 @@ SELECT tbl = 'test_rel', relid = 'test_rel'::regclass FROM test_rel;
 
 -- Test consistency checks in $_TD
 create table foo (foo_id int primary key, descrip text not null);
-NOTICE:  CREATE TABLE / PRIMARY KEY will create implicit index "foo_pkey" for table "foo"
 create or replace function foo_trig() returns trigger
 language plphp as $$
 	$_TD = 1;
