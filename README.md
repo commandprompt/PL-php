@@ -4,7 +4,7 @@
 
 **Write PostgreSQL functions, triggers, and procedures in PHP.**
 
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13_to_18-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-11_to_18-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![PHP](https://img.shields.io/badge/PHP-8.x-777BB4?logo=php&logoColor=white)](https://www.php.net/)
 [![Tests](https://img.shields.io/badge/tests-17_passing-brightgreen)](sql/)
 [![License](https://img.shields.io/badge/license-permissive-blue)](#license)
@@ -95,7 +95,7 @@ $$;
 
 ## Requirements
 
-- **PostgreSQL 13 or newer** (tested on 13–18; 18 recommended), with the server
+- **PostgreSQL 11 or newer** (tested on 11–18; 18 recommended), with the server
   development files that provide `pg_config`.
 - **PHP 8.x** built with the **embed SAPI** and **without** ZTS (thread safety).
   On Debian/Ubuntu, install `php8.x-dev` and `libphp8.x-embed`.
@@ -132,7 +132,7 @@ roles you would trust with the server's OS account.
 
 - [Language reference](doc/plphp.md)
 - [Installation](INSTALL)
-- [Changelog](HISTORY)
+- [Changelog](CHANGELOG.md)
 - [PL/php vs PL/Perl](doc/plperl-comparison.md)
 - [PL/php vs PL/Tcl](doc/pltcl-comparison.md)
 
