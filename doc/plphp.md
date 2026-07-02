@@ -2,7 +2,7 @@
 
 PL/php lets you write PostgreSQL functions and triggers in PHP. This document
 describes the programming interface. For build and install instructions see
-[`INSTALL`](../INSTALL); for a feature summary see [`README`](../README).
+[`INSTALL`](../INSTALL); for a feature summary see [`README`](../README.md).
 
 Tested with **PostgreSQL 18** and **PHP 8.3** (embed SAPI, non-thread-safe);
 also builds on PostgreSQL 16.
