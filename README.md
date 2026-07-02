@@ -132,7 +132,7 @@ roles you would trust with the server's OS account.
 
 - [Language reference](doc/plphp.md)
 - [Installation](INSTALL)
-- [Changelog](HISTORY)
+- [Changelog](CHANGELOG.md)
 - [PL/php vs PL/Perl](doc/plperl-comparison.md)
 - [PL/php vs PL/Tcl](doc/pltcl-comparison.md)
 
