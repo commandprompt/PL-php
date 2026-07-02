@@ -8,7 +8,7 @@ and links against the PHP "embed" SAPI.
 1. Prerequisites
 ----------------
 
-  * PostgreSQL 13 or newer (tested on 13-18), including the server development files that provide
+  * PostgreSQL 11 or newer (tested on 11-18), including the server development files that provide
     pg_config (Debian/Ubuntu: postgresql-server-dev-NN; RPM: postgresqlNN-devel).
 
   * PHP 8.x built with the embed SAPI and with thread safety (ZTS) DISABLED,

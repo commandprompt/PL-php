@@ -48,7 +48,9 @@
 #include "funcapi.h"			/* needed for SRF support */
 #include "lib/stringinfo.h"
 #include "nodes/parsenodes.h"	/* InlineCodeBlock, for DO blocks */
+#if PG_VERSION_NUM >= 130000
 #include "tcop/cmdtag.h"		/* GetCommandTagName, for event triggers */
+#endif
 #include "utils/guc.h"			/* plphp.start_proc GUC */
 
 #include "utils/array.h"
@@ -112,6 +114,18 @@
 #endif
 
 PG_MODULE_MAGIC;
+
+/*
+ * FunctionCallInfo argument access.  PostgreSQL 12 replaced the fixed arg[]/
+ * argnull[] arrays with a flexible NullableDatum args[] array.
+ */
+#if PG_VERSION_NUM >= 120000
+#define PLPHP_ARG_ISNULL(fcinfo, n)	((fcinfo)->args[n].isnull)
+#define PLPHP_ARG_VALUE(fcinfo, n)	((fcinfo)->args[n].value)
+#else
+#define PLPHP_ARG_ISNULL(fcinfo, n)	((fcinfo)->argnull[n])
+#define PLPHP_ARG_VALUE(fcinfo, n)	((fcinfo)->arg[n])
+#endif
 
 /* Check the argument type to expect to accept an initial value */
 #define IS_ARGMODE_OUT(mode) ((mode) == PROARGMODE_OUT || \
@@ -1205,7 +1219,12 @@ plphp_event_trigger_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 	td = (zval *) emalloc(sizeof(zval));
 	array_init(td);
 	add_assoc_string(td, "event", tdata->event);
+#if PG_VERSION_NUM >= 130000
+	/* PG 13 turned the command tag into a CommandTag enum */
 	add_assoc_string(td, "tag", GetCommandTagName(tdata->tag));
+#else
+	add_assoc_string(td, "tag", tdata->tag);
+#endif
 
 	/* Call plphp_proc_NNN_evttrigger($_TD) */
 	snprintf(call, sizeof(call), "plphp_proc_%u_evttrigger",
@@ -1917,7 +1936,7 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 
 		if (desc->arg_typtype[i] == TYPTYPE_COMPOSITE)
 		{
-			if (fcinfo->args[j].isnull)
+			if (PLPHP_ARG_ISNULL(fcinfo, j))
 				add_next_index_null(retval);
 			else
 			{
@@ -1928,7 +1947,7 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 				HeapTupleData	tmptup;
 				zval		   *hashref;
 
-				td = DatumGetHeapTupleHeader(fcinfo->args[j].value);
+				td = DatumGetHeapTupleHeader(PLPHP_ARG_VALUE(fcinfo, j));
 
 				/* Build a temporary HeapTuple control structure */
 				tmptup.t_len = HeapTupleHeaderGetDatumLength(td);
@@ -1949,7 +1968,7 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 		}
 		else
 		{
-			if (fcinfo->args[j].isnull)
+			if (PLPHP_ARG_ISNULL(fcinfo, j))
 				add_next_index_null(retval);
 			else
 			{
@@ -1961,7 +1980,7 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 				 * representation to pass to PHP.
 				 */
 				tmp = OutputFunctionCall(&(desc->arg_out_func[i]),
-										 fcinfo->args[j].value);
+										 PLPHP_ARG_VALUE(fcinfo, j));
 				/*
 				 * FIXME -- this is bogus.  Not every value starting with { is
 				 * an array.  Figure out a better method for detecting arrays.

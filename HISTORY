@@ -1,7 +1,7 @@
 Release 2.0
 2026-07-01
 
-Modernization for current PostgreSQL and PHP.  Tested on PostgreSQL 13 through
+Modernization for current PostgreSQL and PHP.  Tested on PostgreSQL 11 through
 18 with PHP 8.3 (embed SAPI, non-thread-safe).
 
 * Ported the C code to PostgreSQL 18 APIs: FunctionCallInfo args[] (PG12),
@@ -31,11 +31,13 @@ Modernization for current PostgreSQL and PHP.  Tested on PostgreSQL 13 through
   (subtransaction(callable, ...)), module autoloading from a plphp_modules
   table, and a plphp.start_proc GUC run at interpreter init.
   See doc/pltcl-comparison.md.
-* Verified on PostgreSQL 13 through 18.  Version guards keep older releases
-  working: MarkGUCPrefixReserved on PG 15+ (EmitWarningsOnPlaceholders before),
-  and an explicit SPI_start_transaction after spi_commit/spi_rollback before
-  PG 15.  A base_1.out variant covers the pre-PG 17 array-dimension error text.
-* Regression suite refreshed; all 17 tests pass on PostgreSQL 13-18 / PHP 8.3.
+* Verified on PostgreSQL 11 through 18.  Version guards keep older releases
+  working: a FunctionCallInfo args[] shim before PG 12, the pre-CommandTag
+  event-trigger tag before PG 13, MarkGUCPrefixReserved on PG 15+
+  (EmitWarningsOnPlaceholders before), and an explicit SPI_start_transaction
+  after spi_commit/spi_rollback before PG 15.  base_1.out and trigger_1.out
+  cover pre-PG 17 / pre-PG 12 error-message wording.
+* Regression suite refreshed; all 17 tests pass on PostgreSQL 11-18 / PHP 8.3.
   The currently-disabled out/varnames tests were re-enabled and compat/txn/
   evttrig/subxact/modules tests for the new features were added.
 
