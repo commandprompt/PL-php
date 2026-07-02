@@ -60,6 +60,8 @@ ZEND_FUNCTION(quote_literal);
 ZEND_FUNCTION(quote_nullable);
 ZEND_FUNCTION(quote_ident);
 ZEND_FUNCTION(elog);
+ZEND_FUNCTION(spi_commit);
+ZEND_FUNCTION(spi_rollback);
 
 void php_SPIresult_destroy(zend_resource *rsrc);
 void php_SPIplan_destroy(zend_resource *rsrc);

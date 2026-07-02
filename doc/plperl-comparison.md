@@ -17,6 +17,7 @@ intentionally out of scope, with the rationale given.
 | Trigger functions (`$_TD`)              | ✅ | ✅ | |
 | Session-shared data                     | `%_SHARED` | `$_SHARED` | |
 | **Anonymous code blocks (`DO`)**        | ✅ | ✅ **added** | `DO $$ ... $$ LANGUAGE plphp` |
+| **Procedures with transaction control** | ✅ | ✅ **added** | `CALL` a `PROCEDURE`; `spi_commit`/`spi_rollback` in a non-atomic context |
 | Trusted (sandboxed) variant             | `plperl` (Safe.pm) | ❌ by design | PHP's `safe_mode` was removed in 5.4; PL/php is untrusted/superuser-only (see [Security](plphp.md#security)) |
 
 ## Built-in functions
@@ -34,6 +35,7 @@ intentionally out of scope, with the rationale given.
 | `quote_literal`               | `quote_literal` **added** | |
 | `quote_nullable`              | `quote_nullable` **added** | |
 | `quote_ident`                 | `quote_ident` **added** | |
+| `spi_commit` / `spi_rollback` | `spi_commit` / `spi_rollback` **added** | Transaction control in a procedure invoked by `CALL` (non-atomic) |
 | `looks_like_number`           | — | Use PHP's built-in `is_numeric()` |
 | `encode_bytea` / `decode_bytea` | — | Use PHP's `bin2hex` / `hex2bin`, `base64_encode`, etc. |
 | `encode_array_literal` / `encode_typed_literal` | — | Marginal; build literals with the quoting helpers |
@@ -47,9 +49,6 @@ intentionally out of scope, with the rationale given.
   `spi_exec` materializes results and `spi_fetch_row` iterates them, covering the
   same use cases; true streaming of very large result sets without materializing
   is not provided.
-- **Transaction control in procedures (`spi_commit` / `spi_rollback`).** PL/php
-  does not implement PROCEDURE / non-atomic call contexts, so these are out of
-  scope.
 - **Interpreter-init hooks / GUCs** (`plperl.on_init`, `plperl.use_strict`,
   etc.). No PL/php equivalent; PHP configuration is applied at interpreter
   startup instead.

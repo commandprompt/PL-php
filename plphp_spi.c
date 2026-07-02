@@ -119,6 +119,9 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_elog, 0, 0, 2)
 	ZEND_ARG_INFO(0, message)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_spi_noargs, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
 /* SPI function table */
 zend_function_entry spi_functions[] =
 {
@@ -137,6 +140,8 @@ zend_function_entry spi_functions[] =
 	ZEND_FE(quote_nullable, arginfo_quote)
 	ZEND_FE(quote_ident, arginfo_quote)
 	ZEND_FE(elog, arginfo_elog)
+	ZEND_FE(spi_commit, arginfo_spi_noargs)
+	ZEND_FE(spi_rollback, arginfo_spi_noargs)
 	ZEND_FE_END
 };
 
@@ -917,6 +922,59 @@ ZEND_FUNCTION(elog)
 		zend_error(E_ERROR, "%s", message);
 	else
 		ereport(elevel, (errmsg("%s", message)));
+}
+
+/*
+ * spi_commit
+ * 		Commit the current transaction and start a new one.  Only valid inside
+ * 		a procedure invoked by CALL in a non-atomic context (SPI_commit itself
+ * 		enforces this and raises an error otherwise).
+ */
+ZEND_FUNCTION(spi_commit)
+{
+	MemoryContext oldcontext = CurrentMemoryContext;
+
+	PG_TRY();
+	{
+		SPI_commit();
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		MemoryContextSwitchTo(oldcontext);
+		edata = CopyErrorData();
+		FlushErrorState();
+		zend_error(E_ERROR, "%s", edata->message);
+		return;
+	}
+	PG_END_TRY();
+}
+
+/*
+ * spi_rollback
+ * 		Roll back the current transaction and start a new one.  Like
+ * 		spi_commit, only valid in a non-atomic procedure call.
+ */
+ZEND_FUNCTION(spi_rollback)
+{
+	MemoryContext oldcontext = CurrentMemoryContext;
+
+	PG_TRY();
+	{
+		SPI_rollback();
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		MemoryContextSwitchTo(oldcontext);
+		edata = CopyErrorData();
+		FlushErrorState();
+		zend_error(E_ERROR, "%s", edata->message);
+		return;
+	}
+	PG_END_TRY();
 }
 
 

@@ -32,7 +32,7 @@ PG_CPPFLAGS = $(PHP_INCLUDES)
 SHLIB_LINK = -L$(PHP_LIBDIR) -l$(PHP_LIBNAME) $(shell $(PHP_CONFIG) --ldflags)
 
 # Regression tests.  "init" installs the extension; keep it first.
-REGRESS = init base shared trigger spi raise cargs pseudo srf out varnames validator compat
+REGRESS = init base shared trigger spi raise cargs pseudo srf out varnames validator compat txn
 
 PG_CONFIG ?= pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)

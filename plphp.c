@@ -498,14 +498,23 @@ Datum
 plphp_call_handler(PG_FUNCTION_ARGS)
 {
 	Datum		retval;
+	bool		nonatomic = false;
 
 	/* Initialize interpreter */
 	plphp_init_all();
 
+	/*
+	 * When invoked as a procedure via CALL in a non-atomic context, the code
+	 * is allowed to commit/rollback (spi_commit/spi_rollback), which requires a
+	 * non-atomic SPI connection.
+	 */
+	if (fcinfo->context && IsA(fcinfo->context, CallContext))
+		nonatomic = !((CallContext *) fcinfo->context)->atomic;
+
 	PG_TRY();
 	{
 		/* Connect to SPI manager */
-		if (SPI_connect() != SPI_OK_CONNECT)
+		if (SPI_connect_ext(nonatomic ? SPI_OPT_NONATOMIC : 0) != SPI_OK_CONNECT)
 			ereport(ERROR,
 					(errcode(ERRCODE_CONNECTION_FAILURE),
 					 errmsg("could not connect to SPI manager")));

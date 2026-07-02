@@ -17,6 +17,7 @@ also builds on PostgreSQL 16.
 - [Trigger functions](#trigger-functions)
 - [Database access (SPI)](#database-access-spi)
 - [Prepared statements](#prepared-statements)
+- [Transaction control](#transaction-control)
 - [Quoting helpers](#quoting-helpers)
 - [Messaging: elog and pg_raise](#messaging-elog-and-pg_raise)
 - [Shared data: `$_SHARED`](#shared-data-_shared)
@@ -237,6 +238,29 @@ $$;
 
 A plan can be cached in `$_SHARED` and reused across calls within a session for
 better performance; free it with `spi_freeplan` when no longer needed.
+
+## Transaction control
+
+Inside a **procedure** invoked by `CALL` in a non-atomic context, you can commit
+or roll back the current transaction:
+
+- `spi_commit()` — commit the current transaction and begin a new one.
+- `spi_rollback()` — roll back the current transaction and begin a new one.
+
+```sql
+CREATE PROCEDURE import_batch() LANGUAGE plphp AS $$
+    for ($i = 0; $i < 1000; $i++) {
+        spi_exec("insert into staging select * from source where batch = $i");
+        spi_commit();            -- make each batch durable as it completes
+    }
+$$;
+
+CALL import_batch();
+```
+
+These are only valid in a non-atomic call context. Calling them from an ordinary
+function, or from a procedure invoked inside an explicit `BEGIN`/`COMMIT` block,
+raises `invalid transaction termination`.
 
 ## Quoting helpers
 
