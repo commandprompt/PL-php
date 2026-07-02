@@ -9,13 +9,16 @@ also builds on PostgreSQL 16.
 
 - [Enabling the language](#enabling-the-language)
 - [Writing functions](#writing-functions)
+- [Anonymous code blocks (DO)](#anonymous-code-blocks-do)
 - [Data type mapping](#data-type-mapping)
 - [Composite types and records](#composite-types-and-records)
 - [Arguments: IN, OUT, INOUT, TABLE, named](#arguments)
 - [Set-returning functions](#set-returning-functions)
 - [Trigger functions](#trigger-functions)
 - [Database access (SPI)](#database-access-spi)
-- [Messaging: pg_raise](#messaging-pg_raise)
+- [Prepared statements](#prepared-statements)
+- [Quoting helpers](#quoting-helpers)
+- [Messaging: elog and pg_raise](#messaging-elog-and-pg_raise)
 - [Shared data: `$_SHARED`](#shared-data-_shared)
 - [Errors and exceptions](#errors-and-exceptions)
 - [Security](#security)
@@ -50,6 +53,22 @@ SELECT php_max(3, 7);   -- 7
 `STRICT` (a.k.a. `RETURNS NULL ON NULL INPUT`) makes the function return NULL
 automatically when any argument is NULL. Without it, a NULL argument arrives as
 an unset element, so test with `isset($args[$n])`.
+
+## Anonymous code blocks (DO)
+
+You can run a one-off block of PHP without defining a function, using `DO`:
+
+```sql
+DO $$
+    $r = spi_exec('select count(*) as n from pg_class');
+    $row = spi_fetch_row($r);
+    elog('NOTICE', "pg_class has {$row['n']} rows");
+$$ LANGUAGE plphp;
+```
+
+A `DO` block takes no arguments and returns nothing; use it for procedural
+one-offs, migrations, or ad-hoc maintenance. Because PL/php is untrusted, only
+superusers can run `DO ... LANGUAGE plphp`.
 
 ## Data type mapping
 
@@ -193,18 +212,65 @@ CREATE FUNCTION sum_series(n integer) RETURNS integer LANGUAGE plphp AS $$
 $$;
 ```
 
-## Messaging: pg_raise
+## Prepared statements
 
-Emit a message to the client/log at a chosen level:
+For queries you run repeatedly, prepare a plan once and execute it with
+parameters. `spi_prepare` takes the query text followed by the SQL type name of
+each `$1`, `$2`, ... placeholder and returns a plan resource:
 
-```php
-pg_raise('notice',  'just so you know');
-pg_raise('warning', 'something looks off');
-pg_raise('error',   'stop right here');   -- aborts, like a PostgreSQL ERROR
+- `spi_prepare(query, type1, type2, ...)` — returns a plan.
+- `spi_exec_prepared(plan, arg1, arg2, ...)` — execute the plan; returns a
+  result resource just like `spi_exec` (use `spi_fetch_row`, `spi_processed`,
+  etc.).
+- `spi_query_prepared(plan, ...)` — an alias of `spi_exec_prepared`.
+- `spi_freeplan(plan)` — release the plan when you are done with it.
+
+```sql
+CREATE FUNCTION lookup(int) RETURNS text LANGUAGE plphp AS $$
+    $plan = spi_prepare('select name from things where id = $1', 'int4');
+    $res  = spi_exec_prepared($plan, $args[0]);
+    $row  = spi_fetch_row($res);
+    spi_freeplan($plan);
+    return $row['name'];
+$$;
 ```
 
-The level is one of `notice`, `warning`, or `error` (case-insensitive). Anything
-PHP writes to standard output is also forwarded to the PostgreSQL log.
+A plan can be cached in `$_SHARED` and reused across calls within a session for
+better performance; free it with `spi_freeplan` when no longer needed.
+
+## Quoting helpers
+
+When building SQL dynamically, quote values and identifiers so the result is
+safe and syntactically correct:
+
+- `quote_literal(string)` — quote a value as an SQL string literal.
+- `quote_nullable(value)` — like `quote_literal`, but a PHP `null` becomes the
+  SQL keyword `NULL`.
+- `quote_ident(name)` — quote a string for use as an SQL identifier (only when
+  needed).
+
+```php
+$sql = "select * from " . quote_ident($table) .
+       " where name = " . quote_literal($name);
+```
+
+## Messaging: elog and pg_raise
+
+`elog(level, message)` emits a message at any PostgreSQL log level:
+
+```php
+elog('DEBUG',   'detailed diagnostics');
+elog('LOG',     'goes to the server log');
+elog('INFO',    'informational');
+elog('NOTICE',  'shown to the client');
+elog('WARNING', 'something looks off');
+elog('ERROR',   'stop right here');   // aborts, like a PostgreSQL ERROR
+```
+
+The level is one of `DEBUG`, `LOG`, `INFO`, `NOTICE`, `WARNING`, or `ERROR`
+(case-insensitive). `pg_raise(level, message)` is an older, narrower spelling
+that accepts `notice`, `warning`, or `error`. Anything PHP writes to standard
+output is also forwarded to the PostgreSQL log.
 
 ## Shared data: `$_SHARED`
 

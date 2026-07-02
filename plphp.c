@@ -46,6 +46,7 @@
 #include "fmgr.h"
 #include "funcapi.h"			/* needed for SRF support */
 #include "lib/stringinfo.h"
+#include "nodes/parsenodes.h"	/* InlineCodeBlock, for DO blocks */
 
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -193,6 +194,9 @@ Datum plphp_call_handler(PG_FUNCTION_ARGS);
 
 PG_FUNCTION_INFO_V1(plphp_validator);
 Datum plphp_validator(PG_FUNCTION_ARGS);
+
+PG_FUNCTION_INFO_V1(plphp_inline_handler);
+Datum plphp_inline_handler(PG_FUNCTION_ARGS);
 
 static Datum plphp_trigger_handler(FunctionCallInfo fcinfo,
 								   plphp_proc_desc *desc);
@@ -450,6 +454,12 @@ plphp_init(void)
 															 "SPI result",
 															 0);
 
+			/* Register the resource for prepared plans */
+			SPIplan_rtype = zend_register_list_destructors_ex(php_SPIplan_destroy,
+															  NULL,
+															  "plphp SPI plan",
+															  0);
+
 			/* Ok, we're done */
 			plphp_first_call = false;
 		}
@@ -551,6 +561,108 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 	PG_END_TRY();
 
 	return retval;
+}
+
+/*
+ * plphp_inline_handler
+ *
+ * 		Execute an anonymous PL/php code block (a DO statement).
+ */
+Datum
+plphp_inline_handler(PG_FUNCTION_ARGS)
+{
+	InlineCodeBlock *codeblock =
+		(InlineCodeBlock *) DatumGetPointer(PG_GETARG_DATUM(0));
+	static long	inline_counter = 0;
+	char		funcname[64];
+	char	   *complete_source;
+	zval		funcname_zv;
+	zval		retval;
+
+	/* Initialize interpreter */
+	plphp_init_all();
+
+	PG_TRY();
+	{
+		if (SPI_connect() != SPI_OK_CONNECT)
+			ereport(ERROR,
+					(errcode(ERRCODE_CONNECTION_FAILURE),
+					 errmsg("could not connect to SPI manager")));
+
+		zend_try
+		{
+			char   *exmsg;
+
+			/* Clean up SRF state */
+			current_fcinfo = NULL;
+
+			/* Wrap the block body in a uniquely-named parameterless function */
+			snprintf(funcname, sizeof(funcname), "plphp_inline_%ld",
+					 ++inline_counter);
+
+			complete_source = (char *) palloc(strlen(codeblock->source_text) +
+											  strlen(funcname) +
+											  strlen("function (){}") + 1);
+			sprintf(complete_source, "function %s(){%s}", funcname,
+					codeblock->source_text);
+
+			zend_hash_str_del(CG(function_table), funcname, strlen(funcname));
+
+			if (zend_eval_string(complete_source, NULL,
+								 "plphp inline code block") == FAILURE)
+			{
+				exmsg = plphp_pop_exception_message();
+				if (exmsg != NULL)
+					elog(ERROR, "unable to compile inline code block: %s", exmsg);
+				else
+					elog(ERROR, "unable to compile inline code block");
+			}
+			pfree(complete_source);
+
+			ZVAL_STRING(&funcname_zv, funcname);
+			ZVAL_UNDEF(&retval);
+
+			if (call_user_function(CG(function_table), NULL, &funcname_zv,
+								   &retval, 0, NULL) == FAILURE)
+				elog(ERROR, "could not execute inline code block");
+
+			exmsg = plphp_pop_exception_message();
+
+			zval_ptr_dtor(&funcname_zv);
+			zval_ptr_dtor(&retval);
+			zend_hash_str_del(CG(function_table), funcname, strlen(funcname));
+
+			if (exmsg != NULL)
+				elog(ERROR, "%s", exmsg);
+		}
+		zend_catch
+		{
+			if (error_msg)
+			{
+				char	str[1024];
+
+				strlcpy(str, error_msg, sizeof(str));
+				pfree(error_msg);
+				error_msg = NULL;
+				elog(ERROR, "%s", str);
+			}
+			else
+				elog(ERROR, "fatal error");
+		}
+		zend_end_try();
+
+		if (SPI_finish() != SPI_OK_FINISH)
+			ereport(ERROR,
+					(errcode(ERRCODE_CONNECTION_DOES_NOT_EXIST),
+					 errmsg("could not disconnect from SPI manager")));
+	}
+	PG_CATCH();
+	{
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	PG_RETURN_VOID();
 }
 
 /*

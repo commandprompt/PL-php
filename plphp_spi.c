@@ -41,7 +41,11 @@
 /* PostgreSQL stuff */
 #include "access/htup_details.h"
 #include "access/xact.h"
+#include "catalog/pg_type.h"
 #include "miscadmin.h"
+#include "parser/parse_type.h"
+#include "utils/builtins.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 
 #undef DEBUG_PLPHP_MEMORY
@@ -55,6 +59,20 @@
 
 /* resource type Id for SPIresult */
 int SPIres_rtype;
+/* resource type Id for a prepared SPI plan */
+int SPIplan_rtype;
+
+/*
+ * A prepared plan, exposed to PHP as a "plphp SPI plan" resource.
+ */
+typedef struct
+{
+	SPIPlanPtr	plan;
+	int			nargs;
+	Oid		   *argtypes;		/* malloc'd, length nargs */
+	Oid		   *typinput;		/* input function Oids, length nargs */
+	Oid		   *typioparam;		/* input typioparams, length nargs */
+} php_SPIplan;
 
 /*
  * Argument metadata for the PHP-callable functions.  PHP 8 requires internal
@@ -78,6 +96,29 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_return_next, 0, 0, 0)
 	ZEND_ARG_INFO(0, value)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_spi_prepare, 0, 0, 1)
+	ZEND_ARG_INFO(0, query)
+	ZEND_ARG_VARIADIC_INFO(0, argtypes)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_spi_exec_prepared, 0, 0, 1)
+	ZEND_ARG_INFO(0, plan)
+	ZEND_ARG_VARIADIC_INFO(0, args)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_spi_freeplan, 0, 0, 1)
+	ZEND_ARG_INFO(0, plan)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_quote, 0, 0, 1)
+	ZEND_ARG_INFO(0, string)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_elog, 0, 0, 2)
+	ZEND_ARG_INFO(0, level)
+	ZEND_ARG_INFO(0, message)
+ZEND_END_ARG_INFO()
+
 /* SPI function table */
 zend_function_entry spi_functions[] =
 {
@@ -88,6 +129,14 @@ zend_function_entry spi_functions[] =
 	ZEND_FE(spi_rewind, arginfo_spi_result)
 	ZEND_FE(pg_raise, arginfo_pg_raise)
 	ZEND_FE(return_next, arginfo_return_next)
+	ZEND_FE(spi_prepare, arginfo_spi_prepare)
+	ZEND_FE(spi_exec_prepared, arginfo_spi_exec_prepared)
+	ZEND_FE(spi_query_prepared, arginfo_spi_exec_prepared)
+	ZEND_FE(spi_freeplan, arginfo_spi_freeplan)
+	ZEND_FE(quote_literal, arginfo_quote)
+	ZEND_FE(quote_nullable, arginfo_quote)
+	ZEND_FE(quote_ident, arginfo_quote)
+	ZEND_FE(elog, arginfo_elog)
 	ZEND_FE_END
 };
 
@@ -496,6 +545,378 @@ zval *get_table_arguments(AttInMetadata *attinmeta)
 			add_next_index_null(retval);
 	}
 	return retval;
+}
+
+/*
+ * php_SPIplan_destroy
+ * 		Free a prepared plan resource (from spi_prepare).
+ */
+void
+php_SPIplan_destroy(zend_resource *rsrc)
+{
+	php_SPIplan *plan = (php_SPIplan *) rsrc->ptr;
+
+	if (plan == NULL)
+		return;
+	if (plan->plan != NULL)
+		SPI_freeplan(plan->plan);
+	if (plan->argtypes)
+		free(plan->argtypes);
+	if (plan->typinput)
+		free(plan->typinput);
+	if (plan->typioparam)
+		free(plan->typioparam);
+	free(plan);
+}
+
+/*
+ * spi_prepare
+ * 		Prepare a query plan.  The first argument is the query text; any
+ * 		further arguments are the SQL type names of the query's $1, $2, ...
+ * 		placeholders.  Returns a plan resource for use with
+ * 		spi_exec_prepared(); free it with spi_freeplan().
+ */
+ZEND_FUNCTION(spi_prepare)
+{
+	char	   *query;
+	size_t		query_len;
+	zval	   *ztypes = NULL;
+	int			ntypes = 0;
+	php_SPIplan *plan;
+	SPIPlanPtr	spiplan;
+	Oid		   *argtypes = NULL;
+	Oid		   *typinput = NULL;
+	Oid		   *typioparam = NULL;
+	int			i;
+	MemoryContext oldcontext = CurrentMemoryContext;
+	ResourceOwner oldowner = CurrentResourceOwner;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "s*", &query, &query_len,
+							  &ztypes, &ntypes) == FAILURE)
+	{
+		zend_error(E_WARNING, "cannot parse parameters in %s",
+				   get_active_function_name());
+		RETURN_FALSE;
+	}
+
+	if (ntypes > 0)
+	{
+		argtypes = (Oid *) malloc(ntypes * sizeof(Oid));
+		typinput = (Oid *) malloc(ntypes * sizeof(Oid));
+		typioparam = (Oid *) malloc(ntypes * sizeof(Oid));
+	}
+
+	PG_TRY();
+	{
+		for (i = 0; i < ntypes; i++)
+		{
+			char   *typ = plphp_zval_get_cstring(&ztypes[i], false, false);
+			Oid		typid;
+			int32	typmod;
+
+			parseTypeString(typ, &typid, &typmod, NULL);
+			argtypes[i] = typid;
+			getTypeInputInfo(typid, &typinput[i], &typioparam[i]);
+			pfree(typ);
+		}
+
+		spiplan = SPI_prepare(query, ntypes, argtypes);
+		if (spiplan == NULL)
+			elog(ERROR, "spi_prepare: SPI_prepare failed: %s",
+				 SPI_result_code_string(SPI_result));
+
+		/* Make the plan outlive the current SPI context */
+		if (SPI_keepplan(spiplan) != 0)
+			elog(ERROR, "spi_prepare: SPI_keepplan failed");
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		MemoryContextSwitchTo(oldcontext);
+		edata = CopyErrorData();
+		FlushErrorState();
+		CurrentResourceOwner = oldowner;
+		if (argtypes)
+			free(argtypes);
+		if (typinput)
+			free(typinput);
+		if (typioparam)
+			free(typioparam);
+		zend_error(E_ERROR, "%s", edata->message);
+		return;
+	}
+	PG_END_TRY();
+
+	/* This chunk is freed in php_SPIplan_destroy */
+	plan = (php_SPIplan *) malloc(sizeof(php_SPIplan));
+	if (!plan)
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY), errmsg("out of memory")));
+	plan->plan = spiplan;
+	plan->nargs = ntypes;
+	plan->argtypes = argtypes;
+	plan->typinput = typinput;
+	plan->typioparam = typioparam;
+
+	RETURN_RES(zend_register_resource((void *) plan, SPIplan_rtype));
+}
+
+/*
+ * spi_exec_prepared
+ * 		Execute a plan prepared with spi_prepare(), passing the plan resource
+ * 		followed by one argument per placeholder.  Returns a result resource
+ * 		usable with spi_fetch_row()/spi_processed()/spi_status(), exactly like
+ * 		spi_exec().
+ */
+ZEND_FUNCTION(spi_exec_prepared)
+{
+	zval	   *z_plan;
+	zval	   *zargs = NULL;
+	int			nargs = 0;
+	php_SPIplan *plan;
+	php_SPIresult *SPIres;
+	Datum	   *values = NULL;
+	char	   *nulls = NULL;
+	int			i;
+	long		status;
+	MemoryContext oldcontext = CurrentMemoryContext;
+	ResourceOwner oldowner = CurrentResourceOwner;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "r*", &z_plan,
+							  &zargs, &nargs) == FAILURE)
+	{
+		zend_error(E_WARNING, "cannot parse parameters in %s",
+				   get_active_function_name());
+		RETURN_FALSE;
+	}
+
+	plan = (php_SPIplan *) zend_fetch_resource(Z_RES_P(z_plan),
+											   "plphp SPI plan", SPIplan_rtype);
+	if (plan == NULL)
+		RETURN_FALSE;
+
+	if (nargs != plan->nargs)
+	{
+		zend_error(E_WARNING,
+				   "spi_exec_prepared: plan expects %d argument(s), got %d",
+				   plan->nargs, nargs);
+		RETURN_FALSE;
+	}
+
+	if (plan->nargs > 0)
+	{
+		values = (Datum *) palloc(plan->nargs * sizeof(Datum));
+		nulls = (char *) palloc(plan->nargs * sizeof(char));
+	}
+
+	BeginInternalSubTransaction(NULL);
+	MemoryContextSwitchTo(oldcontext);
+
+	PG_TRY();
+	{
+		for (i = 0; i < plan->nargs; i++)
+		{
+			char   *val = plphp_zval_get_cstring(&zargs[i], true, true);
+
+			if (val == NULL)
+			{
+				nulls[i] = 'n';
+				values[i] = (Datum) 0;
+			}
+			else
+			{
+				nulls[i] = ' ';
+				values[i] = OidInputFunctionCall(plan->typinput[i], val,
+												 plan->typioparam[i], -1);
+				pfree(val);
+			}
+		}
+
+		status = SPI_execute_plan(plan->plan, values, nulls, false, 0);
+
+		ReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		MemoryContextSwitchTo(oldcontext);
+		edata = CopyErrorData();
+		FlushErrorState();
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+		zend_error(E_ERROR, "%s", edata->message);
+		return;
+	}
+	PG_END_TRY();
+
+	/* This chunk is freed in php_SPIresult_destroy */
+	SPIres = (php_SPIresult *) malloc(sizeof(php_SPIresult));
+	if (!SPIres)
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY), errmsg("out of memory")));
+	SPIres->SPI_processed = SPI_processed;
+	if (status == SPI_OK_SELECT)
+		SPIres->SPI_tuptable = SPI_tuptable;
+	else
+		SPIres->SPI_tuptable = NULL;
+	SPIres->current_row = 0;
+	SPIres->status = status;
+
+	RETURN_RES(zend_register_resource((void *) SPIres, SPIres_rtype));
+}
+
+/*
+ * spi_query_prepared
+ * 		Alias of spi_exec_prepared (PL/php materializes results, so the
+ * 		distinction PL/Perl draws between the two does not apply).
+ */
+ZEND_FUNCTION(spi_query_prepared)
+{
+	zif_spi_exec_prepared(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+
+/*
+ * spi_freeplan
+ * 		Release a plan created by spi_prepare().
+ */
+ZEND_FUNCTION(spi_freeplan)
+{
+	zval	   *z_plan;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "r", &z_plan) == FAILURE)
+	{
+		zend_error(E_WARNING, "cannot parse parameters in %s",
+				   get_active_function_name());
+		RETURN_FALSE;
+	}
+
+	if (zend_fetch_resource(Z_RES_P(z_plan), "plphp SPI plan",
+							SPIplan_rtype) == NULL)
+		RETURN_FALSE;
+
+	/* Closing the resource runs php_SPIplan_destroy */
+	zend_list_close(Z_RES_P(z_plan));
+	RETURN_TRUE;
+}
+
+/*
+ * quote_literal
+ * 		Return the argument suitably quoted for use as a string literal in an
+ * 		SQL statement.
+ */
+ZEND_FUNCTION(quote_literal)
+{
+	char	   *str;
+	size_t		len;
+	char	   *quoted;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &str, &len) == FAILURE)
+	{
+		zend_error(E_WARNING, "cannot parse parameters in %s",
+				   get_active_function_name());
+		RETURN_FALSE;
+	}
+
+	quoted = quote_literal_cstr(str);
+	RETVAL_STRING(quoted);
+	pfree(quoted);
+}
+
+/*
+ * quote_nullable
+ * 		Like quote_literal, but a PHP null yields the SQL string "NULL".
+ */
+ZEND_FUNCTION(quote_nullable)
+{
+	char	   *str = NULL;
+	size_t		len = 0;
+	char	   *quoted;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "s!", &str, &len) == FAILURE)
+	{
+		zend_error(E_WARNING, "cannot parse parameters in %s",
+				   get_active_function_name());
+		RETURN_FALSE;
+	}
+
+	if (str == NULL)
+		RETURN_STRING("NULL");
+
+	quoted = quote_literal_cstr(str);
+	RETVAL_STRING(quoted);
+	pfree(quoted);
+}
+
+/*
+ * quote_ident
+ * 		Return the argument suitably quoted for use as an SQL identifier.
+ */
+ZEND_FUNCTION(quote_ident)
+{
+	char	   *str;
+	size_t		len;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &str, &len) == FAILURE)
+	{
+		zend_error(E_WARNING, "cannot parse parameters in %s",
+				   get_active_function_name());
+		RETURN_FALSE;
+	}
+
+	/* quote_identifier may return its argument unchanged, so don't free it */
+	RETURN_STRING(quote_identifier(str));
+}
+
+/*
+ * elog
+ * 		PL/Perl-compatible logging: elog(level, message) where level is one of
+ * 		DEBUG, LOG, INFO, NOTICE, WARNING or ERROR.
+ */
+ZEND_FUNCTION(elog)
+{
+	char	   *level = NULL,
+			   *message = NULL;
+	size_t		level_len,
+				message_len;
+	int			elevel;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "ss",
+							  &level, &level_len,
+							  &message, &message_len) == FAILURE)
+	{
+		zend_error(E_WARNING, "cannot parse parameters in %s",
+				   get_active_function_name());
+		return;
+	}
+
+	if (strcasecmp(level, "DEBUG") == 0)
+		elevel = DEBUG1;
+	else if (strcasecmp(level, "LOG") == 0)
+		elevel = LOG;
+	else if (strcasecmp(level, "INFO") == 0)
+		elevel = INFO;
+	else if (strcasecmp(level, "NOTICE") == 0)
+		elevel = NOTICE;
+	else if (strcasecmp(level, "WARNING") == 0)
+		elevel = WARNING;
+	else if (strcasecmp(level, "ERROR") == 0)
+		elevel = ERROR;
+	else
+	{
+		zend_error(E_ERROR, "elog: unrecognized level \"%s\"", level);
+		return;
+	}
+
+	if (elevel == ERROR)
+		/* route through the PHP error path so it unwinds cleanly */
+		zend_error(E_ERROR, "%s", message);
+	else
+		ereport(elevel, (errmsg("%s", message)));
 }
 
 

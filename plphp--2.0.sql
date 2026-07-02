@@ -13,6 +13,11 @@ RETURNS language_handler
 AS 'MODULE_PATHNAME'
 LANGUAGE C;
 
+CREATE FUNCTION plphp_inline_handler(internal)
+RETURNS void
+AS 'MODULE_PATHNAME'
+LANGUAGE C;
+
 CREATE FUNCTION plphp_validator(oid)
 RETURNS void
 AS 'MODULE_PATHNAME'
@@ -20,6 +25,7 @@ LANGUAGE C;
 
 CREATE LANGUAGE plphp
     HANDLER plphp_call_handler
+    INLINE plphp_inline_handler
     VALIDATOR plphp_validator;
 
 COMMENT ON LANGUAGE plphp IS 'PL/php procedural language (untrusted)';
