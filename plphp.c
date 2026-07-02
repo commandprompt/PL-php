@@ -42,11 +42,13 @@
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
 
+#include "commands/event_trigger.h"	/* event trigger support */
 #include "commands/trigger.h"
 #include "fmgr.h"
 #include "funcapi.h"			/* needed for SRF support */
 #include "lib/stringinfo.h"
 #include "nodes/parsenodes.h"	/* InlineCodeBlock, for DO blocks */
+#include "tcop/cmdtag.h"		/* GetCommandTagName, for event triggers */
 
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -200,12 +202,15 @@ Datum plphp_inline_handler(PG_FUNCTION_ARGS);
 
 static Datum plphp_trigger_handler(FunctionCallInfo fcinfo,
 								   plphp_proc_desc *desc);
+static Datum plphp_event_trigger_handler(FunctionCallInfo fcinfo,
+										 plphp_proc_desc *desc);
 static Datum plphp_func_handler(FunctionCallInfo fcinfo,
 							    plphp_proc_desc *desc);
 static Datum plphp_srf_handler(FunctionCallInfo fcinfo,
 						   	   plphp_proc_desc *desc);
 
-static plphp_proc_desc *plphp_compile_function(Oid fnoid, bool is_trigger);
+static plphp_proc_desc *plphp_compile_function(Oid fnoid, bool is_trigger,
+											   bool is_event_trigger);
 static zval *plphp_call_php_func(plphp_proc_desc *desc,
 								 FunctionCallInfo fcinfo);
 static zval *plphp_call_php_trig(plphp_proc_desc *desc,
@@ -529,13 +534,22 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 			/* Redirect to the appropiate handler */
 			if (CALLED_AS_TRIGGER(fcinfo))
 			{
-				desc = plphp_compile_function(fcinfo->flinfo->fn_oid, true);
+				desc = plphp_compile_function(fcinfo->flinfo->fn_oid,
+											  true, false);
 
 				retval = plphp_trigger_handler(fcinfo, desc);
 			}
+			else if (CALLED_AS_EVENT_TRIGGER(fcinfo))
+			{
+				desc = plphp_compile_function(fcinfo->flinfo->fn_oid,
+											  false, true);
+
+				retval = plphp_event_trigger_handler(fcinfo, desc);
+			}
 			else
 			{
-				desc = plphp_compile_function(fcinfo->flinfo->fn_oid, false);
+				desc = plphp_compile_function(fcinfo->flinfo->fn_oid,
+											  false, false);
 
 				if (desc->retset)
 					retval = plphp_srf_handler(fcinfo, desc);
@@ -1027,6 +1041,61 @@ plphp_trigger_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 }
 
 /*
+ * plphp_event_trigger_handler
+ * 		Handler for event trigger function calls.  Builds $_TD with the
+ * 		firing event and command tag, and calls the user function.
+ */
+static Datum
+plphp_event_trigger_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
+{
+	EventTriggerData *tdata = (EventTriggerData *) fcinfo->context;
+	zval	   *td;
+	zval	   *phpret;
+	zval		funcname;
+	zval		param;
+	char	   *exmsg;
+	char		call[64];
+
+	/* Build $_TD for the event trigger */
+	td = (zval *) emalloc(sizeof(zval));
+	array_init(td);
+	add_assoc_string(td, "event", tdata->event);
+	add_assoc_string(td, "tag", GetCommandTagName(tdata->tag));
+
+	/* Call plphp_proc_NNN_evttrigger($_TD) */
+	snprintf(call, sizeof(call), "plphp_proc_%u_evttrigger",
+			 fcinfo->flinfo->fn_oid);
+	ZVAL_STRING(&funcname, call);
+	ZVAL_COPY_VALUE(&param, td);
+	efree(td);
+
+	phpret = (zval *) emalloc(sizeof(zval));
+	ZVAL_UNDEF(phpret);
+
+	if (call_user_function(CG(function_table), NULL, &funcname, phpret,
+						   1, &param) == FAILURE)
+		elog(ERROR, "could not call event trigger function %s", desc->proname);
+
+	exmsg = plphp_pop_exception_message();
+
+	zval_ptr_dtor(&funcname);
+	zval_ptr_dtor(&param);
+	zval_ptr_dtor(phpret);
+	efree(phpret);
+
+	if (exmsg != NULL)
+		elog(ERROR, "%s", exmsg);
+
+	/* Disconnect from SPI; the return value of an event trigger is ignored */
+	if (SPI_finish() != SPI_OK_FINISH)
+		ereport(ERROR,
+				(errcode(ERRCODE_CONNECTION_DOES_NOT_EXIST),
+				 errmsg("could not disconnect from SPI manager")));
+
+	return (Datum) 0;
+}
+
+/*
  * plphp_func_handler
  * 		Handler for regular function calls
  */
@@ -1253,7 +1322,7 @@ plphp_srf_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
  * 		Compile (or hopefully just look up) function
  */
 static plphp_proc_desc *
-plphp_compile_function(Oid fnoid, bool is_trigger)
+plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 {
 	HeapTuple	procTup;
 	Form_pg_proc procStruct;
@@ -1276,6 +1345,9 @@ plphp_compile_function(Oid fnoid, bool is_trigger)
 	if (is_trigger)
 		snprintf(internal_proname, sizeof(internal_proname),
 				 "plphp_proc_%u_trigger", fnoid);
+	else if (is_event_trigger)
+		snprintf(internal_proname, sizeof(internal_proname),
+				 "plphp_proc_%u_evttrigger", fnoid);
 	else
 		snprintf(internal_proname, sizeof(internal_proname),
 				 "plphp_proc_%u", fnoid);
@@ -1370,7 +1442,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger)
 		 * Get the required information for input conversion of the return
 		 * value, and output conversion of the procedure's arguments.
 		 */
-		if (!is_trigger)
+		if (!is_trigger && !is_event_trigger)
 		{
 			char  **argnames;
 			char   *argmodes;
@@ -1604,6 +1676,9 @@ plphp_compile_function(Oid fnoid, bool is_trigger)
 		if (is_trigger)
 			/* $_TD is passed by reference so the function can modify NEW */
 			sprintf(complete_proc_source, "function %s(&$_TD){%s}",
+					internal_proname, proc_source);
+		else if (is_event_trigger)
+			sprintf(complete_proc_source, "function %s($_TD){%s}",
 					internal_proname, proc_source);
 		else
 			sprintf(complete_proc_source, 

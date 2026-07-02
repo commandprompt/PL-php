@@ -1,0 +1,15 @@
+--
+-- Event trigger functions (ported from PL/Tcl).
+--
+CREATE FUNCTION snitch() RETURNS event_trigger LANGUAGE plphp AS $$
+    pg_raise('notice', "event: {$_TD['event']} tag: {$_TD['tag']}");
+$$;
+CREATE EVENT TRIGGER snitch_start ON ddl_command_start EXECUTE FUNCTION snitch();
+CREATE TABLE et_test (x int);
+NOTICE:  plphp: event: ddl_command_start tag: CREATE TABLE
+ALTER TABLE et_test ADD COLUMN y int;
+NOTICE:  plphp: event: ddl_command_start tag: ALTER TABLE
+DROP TABLE et_test;
+NOTICE:  plphp: event: ddl_command_start tag: DROP TABLE
+DROP EVENT TRIGGER snitch_start;
+DROP FUNCTION snitch();
