@@ -9,6 +9,10 @@
 [![Tests](https://img.shields.io/badge/tests-17_passing-brightgreen)](sql/)
 [![License](https://img.shields.io/badge/license-permissive-blue)](#license)
 
+<br>
+
+<img src="doc/demo.png" alt="Defining and calling PL/php functions in psql" width="480">
+
 </div>
 
 PL/php is a procedural-language handler that lets you write database functions in
