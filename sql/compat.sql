@@ -83,3 +83,35 @@ CREATE FUNCTION elog_error() RETURNS void LANGUAGE plphp AS $$
     elog('ERROR', 'boom from elog');
 $$;
 SELECT elog_error();
+
+-- A prepared statement with a NULL argument
+CREATE FUNCTION prep_null() RETURNS text LANGUAGE plphp AS $$
+    $plan = spi_prepare('select $1::text as v', 'text');
+    $r = spi_exec_prepared($plan, null);
+    $row = spi_fetch_row($r);
+    spi_freeplan($plan);
+    return $row['v'] === null ? 'null ok' : 'got: ' . $row['v'];
+$$;
+SELECT prep_null();
+
+-- A prepared statement with no placeholders
+CREATE FUNCTION prep_noargs() RETURNS int LANGUAGE plphp AS $$
+    $plan = spi_prepare('select 7 as v');
+    $r = spi_exec_prepared($plan);
+    $row = spi_fetch_row($r);
+    spi_freeplan($plan);
+    return intval($row['v']);
+$$;
+SELECT prep_noargs();
+
+-- quote_ident only quotes identifiers that need it
+CREATE FUNCTION quoting2() RETURNS text LANGUAGE plphp AS $$
+    return quote_ident('simple') . ' | ' . quote_ident('Mixed Case');
+$$;
+SELECT quoting2();
+
+-- elog with an unrecognized level is an error
+CREATE FUNCTION elog_bad() RETURNS void LANGUAGE plphp AS $$
+    elog('BOGUS', 'nope');
+$$;
+SELECT elog_bad();

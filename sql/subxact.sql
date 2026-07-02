@@ -36,4 +36,35 @@ CREATE FUNCTION sx_ret(int) RETURNS int LANGUAGE plphp AS $$
 $$;
 SELECT sx_ret(21);
 
+-- Nested subtransactions: the inner one rolls back (its exception is caught)
+-- while the outer one commits.
+CREATE FUNCTION sx_nested() RETURNS void LANGUAGE plphp AS $$
+    subtransaction(function() {
+        spi_exec("insert into sx values (10)");
+        try {
+            subtransaction(function() {
+                spi_exec("insert into sx values (11)");
+                throw new Exception("inner fails");
+            });
+        } catch (\Throwable $e) {
+            pg_raise('notice', 'inner rolled back: ' . $e->getMessage());
+        }
+    });
+$$;
+SELECT sx_nested();
+-- 1 was already present; 10 committed, 11 rolled back.
+SELECT id FROM sx ORDER BY id;
+
+-- A database error inside a subtransaction rolls it back and aborts the
+-- statement -- it is not catchable as a PHP exception.
+CREATE FUNCTION sx_dberr() RETURNS void LANGUAGE plphp AS $$
+    try {
+        subtransaction(function() { spi_exec("insert into sx values (1/0)"); });
+    } catch (\Throwable $e) {
+        pg_raise('notice', 'this is not reached for a database error');
+    }
+$$;
+SELECT sx_dberr();
+SELECT count(*) AS after_dberr FROM sx;
+
 DROP TABLE sx;

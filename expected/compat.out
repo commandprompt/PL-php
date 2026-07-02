@@ -111,3 +111,47 @@ CREATE FUNCTION elog_error() RETURNS void LANGUAGE plphp AS $$
 $$;
 SELECT elog_error();
 ERROR:  boom from elog at line 2
+-- A prepared statement with a NULL argument
+CREATE FUNCTION prep_null() RETURNS text LANGUAGE plphp AS $$
+    $plan = spi_prepare('select $1::text as v', 'text');
+    $r = spi_exec_prepared($plan, null);
+    $row = spi_fetch_row($r);
+    spi_freeplan($plan);
+    return $row['v'] === null ? 'null ok' : 'got: ' . $row['v'];
+$$;
+SELECT prep_null();
+ prep_null 
+-----------
+ null ok
+(1 row)
+
+-- A prepared statement with no placeholders
+CREATE FUNCTION prep_noargs() RETURNS int LANGUAGE plphp AS $$
+    $plan = spi_prepare('select 7 as v');
+    $r = spi_exec_prepared($plan);
+    $row = spi_fetch_row($r);
+    spi_freeplan($plan);
+    return intval($row['v']);
+$$;
+SELECT prep_noargs();
+ prep_noargs 
+-------------
+           7
+(1 row)
+
+-- quote_ident only quotes identifiers that need it
+CREATE FUNCTION quoting2() RETURNS text LANGUAGE plphp AS $$
+    return quote_ident('simple') . ' | ' . quote_ident('Mixed Case');
+$$;
+SELECT quoting2();
+       quoting2        
+-----------------------
+ simple | "Mixed Case"
+(1 row)
+
+-- elog with an unrecognized level is an error
+CREATE FUNCTION elog_bad() RETURNS void LANGUAGE plphp AS $$
+    elog('BOGUS', 'nope');
+$$;
+SELECT elog_bad();
+ERROR:  elog: unrecognized level "BOGUS" at line 2
