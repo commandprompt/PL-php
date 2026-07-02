@@ -943,6 +943,10 @@ ZEND_FUNCTION(spi_commit)
 	PG_TRY();
 	{
 		SPI_commit();
+#if PG_VERSION_NUM < 150000
+		/* Before PG 15, SPI_commit did not start a new transaction */
+		SPI_start_transaction();
+#endif
 	}
 	PG_CATCH();
 	{
@@ -969,6 +973,10 @@ ZEND_FUNCTION(spi_rollback)
 	PG_TRY();
 	{
 		SPI_rollback();
+#if PG_VERSION_NUM < 150000
+		/* Before PG 15, SPI_rollback did not start a new transaction */
+		SPI_start_transaction();
+#endif
 	}
 	PG_CATCH();
 	{

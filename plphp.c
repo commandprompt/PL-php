@@ -364,7 +364,11 @@ _PG_init(void)
 							   NULL,
 							   PGC_SUSET, 0,
 							   NULL, NULL, NULL);
+#if PG_VERSION_NUM >= 150000
 	MarkGUCPrefixReserved("plphp");
+#else
+	EmitWarningsOnPlaceholders("plphp");
+#endif
 }
 
 /*

@@ -1,8 +1,8 @@
 Release 2.0
 2026-07-01
 
-Modernization for current PostgreSQL and PHP.  Tested on PostgreSQL 18 with
-PHP 8.3 (embed SAPI, non-thread-safe); also builds on PostgreSQL 16.
+Modernization for current PostgreSQL and PHP.  Tested on PostgreSQL 13 through
+18 with PHP 8.3 (embed SAPI, non-thread-safe).
 
 * Ported the C code to PostgreSQL 18 APIs: FunctionCallInfo args[] (PG12),
   TupleDescAttr (PG10), SearchSysCache1, strlcpy, TextDatumGetCString,
@@ -31,9 +31,13 @@ PHP 8.3 (embed SAPI, non-thread-safe); also builds on PostgreSQL 16.
   (subtransaction(callable, ...)), module autoloading from a plphp_modules
   table, and a plphp.start_proc GUC run at interpreter init.
   See doc/pltcl-comparison.md.
-* Regression suite refreshed and passing on PostgreSQL 18 / PHP 8.3; the
-  currently-disabled out/varnames tests were re-enabled and compat/txn/evttrig/
-  subxact/modules tests for the new features were added.
+* Verified on PostgreSQL 13 through 18.  Version guards keep older releases
+  working: MarkGUCPrefixReserved on PG 15+ (EmitWarningsOnPlaceholders before),
+  and an explicit SPI_start_transaction after spi_commit/spi_rollback before
+  PG 15.  A base_1.out variant covers the pre-PG 17 array-dimension error text.
+* Regression suite refreshed; all 17 tests pass on PostgreSQL 13-18 / PHP 8.3.
+  The currently-disabled out/varnames tests were re-enabled and compat/txn/
+  evttrig/subxact/modules tests for the new features were added.
 
 Note: PHP's "safe_mode" was removed in PHP 5.4, so PL/php can no longer be
 sandboxed.  It is now an UNTRUSTED, superuser-only language (created without the
