@@ -26,9 +26,14 @@ PHP 8.3 (embed SAPI, non-thread-safe); also builds on PostgreSQL 16.
   DEBUG/LOG/INFO/NOTICE/WARNING/ERROR, and transaction control (spi_commit /
   spi_rollback) in procedures called via CALL in a non-atomic context.
   See doc/plperl-comparison.md.
+* Added features for parity with PL/Tcl: event trigger functions (RETURNS
+  event_trigger, with $_TD['event']/$_TD['tag']), explicit subtransactions
+  (subtransaction(callable, ...)), module autoloading from a plphp_modules
+  table, and a plphp.start_proc GUC run at interpreter init.
+  See doc/pltcl-comparison.md.
 * Regression suite refreshed and passing on PostgreSQL 18 / PHP 8.3; the
-  currently-disabled out/varnames tests were re-enabled and a compat test for
-  the new features was added.
+  currently-disabled out/varnames tests were re-enabled and compat/txn/evttrig/
+  subxact/modules tests for the new features were added.
 
 Note: PHP's "safe_mode" was removed in PHP 5.4, so PL/php can no longer be
 sandboxed.  It is now an UNTRUSTED, superuser-only language (created without the

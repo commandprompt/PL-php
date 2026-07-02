@@ -49,6 +49,7 @@
 #include "lib/stringinfo.h"
 #include "nodes/parsenodes.h"	/* InlineCodeBlock, for DO blocks */
 #include "tcop/cmdtag.h"		/* GetCommandTagName, for event triggers */
+#include "utils/guc.h"			/* plphp.start_proc GUC */
 
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -185,11 +186,21 @@ static StringInfo currmsg = NULL;
  * errhint, etc as well.
  */
 static char *error_msg = NULL;
+
+/* GUC: name of a function to run once when the interpreter is initialized */
+static char *plphp_start_proc = NULL;
+
+/* Has the per-session init (module loading + start_proc) run yet? */
+static bool plphp_session_inited = false;
+
 /*
  * Forward declarations
  */
+void		_PG_init(void);
 static void plphp_init_all(void);
 void		plphp_init(void);
+static void plphp_session_init(void);
+static void plphp_load_modules(void);
 
 PG_FUNCTION_INFO_V1(plphp_call_handler);
 Datum plphp_call_handler(PG_FUNCTION_ARGS);
@@ -337,6 +348,24 @@ static sapi_module_struct plphp_sapi_module = {
 	NULL,						/* Unblock interrupts */
 	STANDARD_SAPI_MODULE_PROPERTIES
 };
+
+/*
+ * _PG_init
+ * 		Module-load callback: register configuration variables.
+ */
+void
+_PG_init(void)
+{
+	DefineCustomStringVariable("plphp.start_proc",
+							   "PL/php function to call when the interpreter "
+							   "is first initialized in a session.",
+							   NULL,
+							   &plphp_start_proc,
+							   NULL,
+							   PGC_SUSET, 0,
+							   NULL, NULL, NULL);
+	MarkGUCPrefixReserved("plphp");
+}
 
 /*
  * plphp_init_all()		- Initialize all
@@ -494,6 +523,115 @@ plphp_init(void)
 }
 
 /*
+ * plphp_load_modules
+ * 		If a table named plphp_modules exists, load each row's PHP source so
+ * 		that any functions/classes it defines are available to every PL/php
+ * 		function in this session.  The table has columns (modname, modseq,
+ * 		modsrc); rows are loaded ordered by (modname, modseq).
+ *
+ * Must be called with an active SPI connection.
+ */
+static void
+plphp_load_modules(void)
+{
+	static long	module_counter = 0;
+	uint64		i;
+	int			ret;
+
+	/* Nothing to do unless a visible plphp_modules table exists */
+	ret = SPI_execute("SELECT 1 FROM pg_class "
+					  "WHERE relname = 'plphp_modules' "
+					  "AND relkind IN ('r', 'p') "
+					  "AND pg_table_is_visible(oid)", true, 1);
+	if (ret != SPI_OK_SELECT || SPI_processed == 0)
+		return;
+
+	ret = SPI_execute("SELECT modsrc FROM plphp_modules "
+					  "ORDER BY modname, modseq", true, 0);
+	if (ret != SPI_OK_SELECT)
+		return;
+
+	for (i = 0; i < SPI_processed; i++)
+	{
+		char   *modsrc = SPI_getvalue(SPI_tuptable->vals[i],
+									  SPI_tuptable->tupdesc, 1);
+		char	fname[64];
+		char   *src;
+		char   *exmsg;
+		zval	fn,
+				rv;
+
+		if (modsrc == NULL)
+			continue;
+
+		/*
+		 * Wrap the module source in a uniquely-named function and run it: any
+		 * function or class declarations it contains are hoisted to global
+		 * scope when the wrapper executes.
+		 */
+		snprintf(fname, sizeof(fname), "plphp_module_%ld", ++module_counter);
+		src = palloc(strlen(modsrc) + strlen(fname) +
+					 strlen("function (){}") + 1);
+		sprintf(src, "function %s(){%s}", fname, modsrc);
+
+		zend_hash_str_del(CG(function_table), fname, strlen(fname));
+		if (zend_eval_string(src, NULL, "plphp module") == FAILURE)
+		{
+			exmsg = plphp_pop_exception_message();
+			if (exmsg != NULL)
+				elog(ERROR, "plphp: failed to load module: %s", exmsg);
+			else
+				elog(ERROR, "plphp: failed to load module");
+		}
+		pfree(src);
+
+		ZVAL_STRING(&fn, fname);
+		ZVAL_UNDEF(&rv);
+		if (call_user_function(CG(function_table), NULL, &fn, &rv,
+							   0, NULL) == FAILURE)
+			elog(ERROR, "plphp: failed to run module");
+
+		exmsg = plphp_pop_exception_message();
+		zval_ptr_dtor(&fn);
+		zval_ptr_dtor(&rv);
+		zend_hash_str_del(CG(function_table), fname, strlen(fname));
+		pfree(modsrc);
+
+		if (exmsg != NULL)
+			elog(ERROR, "plphp: error while loading module: %s", exmsg);
+	}
+}
+
+/*
+ * plphp_session_init
+ * 		Run once per session on the first PL/php use (with SPI connected):
+ * 		load modules from plphp_modules and invoke plphp.start_proc.
+ */
+static void
+plphp_session_init(void)
+{
+	if (plphp_session_inited)
+		return;
+	plphp_session_inited = true;
+
+	plphp_load_modules();
+
+	if (plphp_start_proc != NULL && plphp_start_proc[0] != '\0')
+	{
+		StringInfoData	buf;
+		int				ret;
+
+		initStringInfo(&buf);
+		appendStringInfo(&buf, "SELECT %s()", plphp_start_proc);
+		ret = SPI_execute(buf.data, false, 0);
+		if (ret < 0)
+			elog(ERROR, "plphp: start_proc \"%s\" failed: %s",
+				 plphp_start_proc, SPI_result_code_string(ret));
+		pfree(buf.data);
+	}
+}
+
+/*
  * plphp_call_handler
  *
  * The visible function of the PL interpreter.  The PostgreSQL function manager
@@ -530,6 +668,9 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 
 			/* Clean up SRF state */
 			current_fcinfo = NULL;
+
+			/* On the first call in this session, load modules / start_proc */
+			plphp_session_init();
 
 			/* Redirect to the appropiate handler */
 			if (CALLED_AS_TRIGGER(fcinfo))

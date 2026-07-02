@@ -15,12 +15,15 @@ also builds on PostgreSQL 16.
 - [Arguments: IN, OUT, INOUT, TABLE, named](#arguments)
 - [Set-returning functions](#set-returning-functions)
 - [Trigger functions](#trigger-functions)
+- [Event trigger functions](#event-trigger-functions)
 - [Database access (SPI)](#database-access-spi)
 - [Prepared statements](#prepared-statements)
 - [Transaction control](#transaction-control)
+- [Subtransactions](#subtransactions)
 - [Quoting helpers](#quoting-helpers)
 - [Messaging: elog and pg_raise](#messaging-elog-and-pg_raise)
 - [Shared data: `$_SHARED`](#shared-data-_shared)
+- [Session initialization: modules and start_proc](#session-initialization-modules-and-start_proc)
 - [Errors and exceptions](#errors-and-exceptions)
 - [Security](#security)
 
@@ -190,6 +193,27 @@ CREATE FUNCTION uppercase_name() RETURNS trigger LANGUAGE plphp AS $$
 $$;
 ```
 
+## Event trigger functions
+
+An event trigger function is declared `RETURNS event_trigger` and fires on DDL
+events rather than on table rows. Its `$_TD` array carries:
+
+| Key             | Meaning                                             |
+|-----------------|-----------------------------------------------------|
+| `$_TD['event']` | the firing event, e.g. `ddl_command_start`          |
+| `$_TD['tag']`   | the command tag, e.g. `CREATE TABLE`                |
+
+```sql
+CREATE FUNCTION no_drop() RETURNS event_trigger LANGUAGE plphp AS $$
+    if ($_TD['tag'] == 'DROP TABLE')
+        pg_raise('error', 'dropping tables is not allowed');
+$$;
+
+CREATE EVENT TRIGGER guard ON ddl_command_start EXECUTE FUNCTION no_drop();
+```
+
+The return value of an event trigger function is ignored.
+
 ## Database access (SPI)
 
 Run queries against the current database from within a function:
@@ -262,6 +286,34 @@ These are only valid in a non-atomic call context. Calling them from an ordinary
 function, or from a procedure invoked inside an explicit `BEGIN`/`COMMIT` block,
 raises `invalid transaction termination`.
 
+## Subtransactions
+
+`subtransaction(callable [, arg, ...])` runs a PHP callable inside an internal
+subtransaction. Any extra arguments are passed through to the callable, and its
+return value is returned. If the callable **throws a PHP exception**, the
+subtransaction's database changes are rolled back and the exception propagates
+to the caller, where it can be caught:
+
+```sql
+CREATE FUNCTION safe_insert(text) RETURNS text LANGUAGE plphp AS $$
+    try {
+        subtransaction(function($v) {
+            spi_exec("insert into t(name) values (" . quote_literal($v) . ")");
+            if ($v === '') throw new Exception('empty name');
+        }, $args[0]);
+        return 'inserted';
+    } catch (\Throwable $e) {
+        return 'skipped: ' . $e->getMessage();   // the insert was rolled back
+    }
+$$;
+```
+
+Note: a *database* error inside the block (for example a constraint violation
+surfaced by `spi_exec`) rolls the subtransaction back and then aborts the
+statement — under PL/php's error model it is re-raised as a PostgreSQL error
+rather than a catchable PHP exception. Throw a PHP exception yourself if you
+want the caller to be able to recover.
+
 ## Quoting helpers
 
 When building SQL dynamically, quote values and identifiers so the result is
@@ -311,6 +363,36 @@ CREATE FUNCTION get_shared(key text) RETURNS text LANGUAGE plphp AS $$
     return $_SHARED[$args[0]];
 $$;
 ```
+
+## Session initialization: modules and start_proc
+
+Two mechanisms let you run PHP setup code the first time PL/php is used in a
+session.
+
+**Modules.** If a table named `plphp_modules(modname text, modseq int, modsrc
+text)` exists, its rows are loaded (ordered by `modname`, `modseq`) when the
+interpreter initializes. Any functions or classes the code defines become
+available to every PL/php function in the session — a convenient place for a
+shared library of helpers:
+
+```sql
+CREATE TABLE plphp_modules (modname text, modseq int, modsrc text);
+INSERT INTO plphp_modules VALUES
+    ('util', 0, 'function slugify($s) { return strtolower(trim($s)); }');
+-- slugify() is now callable from any PL/php function in new sessions.
+```
+
+**start_proc.** The `plphp.start_proc` configuration setting names a PL/php
+function to call once, when the interpreter is first initialized in a session:
+
+```sql
+-- e.g. in postgresql.conf, ALTER DATABASE ... SET, or a session that has
+-- already loaded PL/php:
+SET plphp.start_proc = 'my_setup';
+```
+
+Both run inside the first PL/php call of the session, after the interpreter is
+ready.
 
 ## Errors and exceptions
 
