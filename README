@@ -1,8 +1,0 @@
-PL/php is a procedural language add-on for PostgreSQL.
-
-It allows you to create PHP functions that are stored inside a PostgreSQL
-database server.  They can then be used as stored procedures.  They have
-many of the functionalities of a standard PostgreSQL function, and you
-can use them to write triggers, set-returning functions, and plain functions
-that would just be too complex or cumbersome to write in PL/pgSQL.
-

@@ -13,8 +13,8 @@ CREATE FUNCTION trigfunc() RETURNS trigger LANGUAGE plphp AS $$
 		}
 	}
 	
-	pg_raise('notice', "trigger: ${_TD['name']} table: ${_TD['relname']}, ".
-		 "level: ${_TD['level']} event: ${_TD['when']} ${_TD['event']}$extra");
+	pg_raise('notice', "trigger: {$_TD['name']} table: {$_TD['relname']}, ".
+		 "level: {$_TD['level']} event: {$_TD['when']} {$_TD['event']}$extra");
 $$;
 
 create table trigfunc_table (a int);
@@ -48,7 +48,7 @@ delete from trigfunc_table where a = 2;
 CREATE FUNCTION trigfunc2() RETURNS trigger LANGUAGE plphp AS $$
 	$extra = "";
 	
-	pg_raise('notice', "schema: ${_TD['schemaname']} table: ${_TD['relname']}");
+	pg_raise('notice', "schema: {$_TD['schemaname']} table: {$_TD['relname']}");
 $$;
 
 create schema "the schema" create table "the table" (a int);

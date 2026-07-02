@@ -1,3 +1,50 @@
+Release 2.0
+2026-07-01
+
+Modernization for current PostgreSQL and PHP.  Tested on PostgreSQL 13 through
+18 with PHP 8.3 (embed SAPI, non-thread-safe).
+
+* Ported the C code to PostgreSQL 18 APIs: FunctionCallInfo args[] (PG12),
+  TupleDescAttr (PG10), SearchSysCache1, strlcpy, TextDatumGetCString,
+  ALLOCSET_DEFAULT_SIZES, uint64 SPI row counts (PG11), and the removal of
+  SPI_restore_connection (PG10).
+* Ported the interpreter glue to the PHP 8 Zend API: new zval/refcount model,
+  hash-table and resource APIs, calling convention (call_user_function),
+  symbol-table access (zend_rebuild_symbol_table), embed startup, and the
+  PHP 8.1+ zend_error_cb signature.
+* Uncaught PHP exceptions (e.g. calling an undefined function or a type error)
+  are now reported as PostgreSQL errors instead of silently returning NULL.
+* PHP deprecations (such as the "${var}" string-interpolation syntax) are now
+  non-fatal notices rather than errors.
+* Replaced the obsolete pg_pltemplate install scripts with a real extension:
+  "CREATE EXTENSION plphp".
+* Replaced the autoconf build with a PGXS Makefile.
+* Added features for parity with PL/Perl: anonymous DO code blocks (an inline
+  handler), prepared statements (spi_prepare / spi_exec_prepared /
+  spi_query_prepared / spi_freeplan), SQL quoting helpers (quote_literal /
+  quote_nullable / quote_ident), a full elog(level, message) supporting
+  DEBUG/LOG/INFO/NOTICE/WARNING/ERROR, and transaction control (spi_commit /
+  spi_rollback) in procedures called via CALL in a non-atomic context.
+  See doc/plperl-comparison.md.
+* Added features for parity with PL/Tcl: event trigger functions (RETURNS
+  event_trigger, with $_TD['event']/$_TD['tag']), explicit subtransactions
+  (subtransaction(callable, ...)), module autoloading from a plphp_modules
+  table, and a plphp.start_proc GUC run at interpreter init.
+  See doc/pltcl-comparison.md.
+* Verified on PostgreSQL 13 through 18.  Version guards keep older releases
+  working: MarkGUCPrefixReserved on PG 15+ (EmitWarningsOnPlaceholders before),
+  and an explicit SPI_start_transaction after spi_commit/spi_rollback before
+  PG 15.  A base_1.out variant covers the pre-PG 17 array-dimension error text.
+* Regression suite refreshed; all 17 tests pass on PostgreSQL 13-18 / PHP 8.3.
+  The currently-disabled out/varnames tests were re-enabled and compat/txn/
+  evttrig/subxact/modules tests for the new features were added.
+
+Note: PHP's "safe_mode" was removed in PHP 5.4, so PL/php can no longer be
+sandboxed.  It is now an UNTRUSTED, superuser-only language (created without the
+TRUSTED attribute); the previous "plphpu" variant was dropped as redundant.
+See the SECURITY NOTE in README.
+
+--------------
 Release 1.4
 2010-07-12
 

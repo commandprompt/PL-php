@@ -1,50 +1,67 @@
-PL/php Installation Procedure
+PL/php Installation
+===================
 
-You can always get the recent version of this document at:
-https://public.commandprompt.com/projects/plphp/wiki/InstallDocs
+PL/php builds with PostgreSQL's standard extension build infrastructure (PGXS)
+and links against the PHP "embed" SAPI.
 
-Note that building against Apache's mod_php (libphp.so) is no longer supported.
 
-The current PL/php release utilizes the GNU build system using
-autoconf/configure to detect system-specific features.
-If the configure program is not present (perhaps because you downloaded from
-Subversion), you need to run
+1. Prerequisites
+----------------
 
-	autoconf
+  * PostgreSQL 13 or newer (tested on 13-18), including the server development files that provide
+    pg_config (Debian/Ubuntu: postgresql-server-dev-NN; RPM: postgresqlNN-devel).
 
-Use configure --help to list all the available options.
+  * PHP 8.x built with the embed SAPI and with thread safety (ZTS) DISABLED,
+    plus its development files (php-config).
 
-In some cases configure may fail to locate your PostgreSQL or PHP installation.
-You can use the following configure options to correct this:
+    On Debian/Ubuntu:
 
---with-php=PHPDIR::
-       specify a path to the PHP installation (configure searches for
-	php-config in PHPDIR or PHPDIR/bin)
- --with-postgres=PGDIR::
-       specify a path to the PostgreSQL installation (configure looks for
-	pg_config in PGDIR or PGDIR/bin).
-Note 1: you need at least PostgreSQL 8.1 and PHP 5.
+        sudo apt-get install php8.3-dev libphp8.3-embed
 
-Note 2: you need GNU make to build PL/php. On systems where GNU make is not the
-default make program (e.g. FreeBSD) you can usually invoke the GNU version with
-gmake.
+    You can confirm the build is suitable with:
 
-Building a suitable PHP installation
-To build PL/php you need the PHP "embed" library (libphp5.so). To build and
-install a shared PHP embed library, unpack the PHP tarball, change dir to the
-PHP source dir and configure with the appropriate options:
+        php-config --php-sapis        # must list "embed"
+        php -i | grep 'Thread Safety' # must say "disabled"
 
-	tar xfj php-5.2.6.tar.bz2
-	cd php-5.2.6
-	configure --enable-embed --prefix=/usr/local [--other-options]
-	make install
-You can, of course, use any other directory instead of /usr/local, but then you
-need to make sure that the PostgreSQL server will be able to find the libraries
-in there if you use something else (either by using LD_LIBRARY_PATH or by
-adding it to /etc/ld.so.conf).
+    If your distribution does not package the embed SAPI, build PHP from source
+    with:  ./configure --enable-embed ...  (and without --enable-zts).
 
-If it doesn't work
+  * A C compiler and GNU make.
 
-Please open a ticket here if you see a problem, with all the details you manage
-to put into it, so that we can find out how to solve it.
-	https://public.commandprompt.com/projects/plphp
+
+2. Build and install
+---------------------
+
+    make
+    sudo make install
+
+The Makefile locates PostgreSQL via pg_config and PHP via php-config, both taken
+from PATH.  Override them if needed:
+
+    make PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config PHP_CONFIG=/usr/bin/php-config
+    sudo make PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config install
+
+This installs the shared library plphp.so plus the extension control and SQL
+files into the directories reported by pg_config.
+
+
+3. Enable the language in a database
+------------------------------------
+
+    CREATE EXTENSION plphp;
+
+PL/php is an untrusted language, so the extension is superuser-only to install
+and only superusers can create PL/php functions.  See the SECURITY NOTE in
+README for why.
+
+
+4. Run the regression tests (optional)
+--------------------------------------
+
+Against a running server whose pg_config is on PATH (or passed via PG_CONFIG):
+
+    make installcheck
+
+The suite installs the extension and exercises scalar functions, arrays,
+composite/record types, triggers, set-returning functions, SPI, argument
+handling (IN/OUT/INOUT/TABLE, named parameters) and the validator.

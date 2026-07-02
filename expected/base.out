@@ -111,7 +111,7 @@ SELECT test_ndim_array(6, 1);
 (1 row)
 
 SELECT test_ndim_array(7, 1);
-ERROR:  number of array dimensions (7) exceeds the maximum allowed (6)
+ERROR:  number of array dimensions exceeds the maximum allowed (6)
 CREATE FUNCTION php_max (integer, integer) RETURNS integer
 STRICT LANGUAGE plphp AS $$
 	if ($args[0] > $args[1]) {
@@ -267,7 +267,7 @@ SELECT php_arr_in(ARRAY[[1, 10], [2, 4], [3, 5]], 2, 1);
 (1 row)
 
 SELECT php_arr_in(ARRAY[[1, 10], [2, 4], [3, 5]], 1, 2);
-NOTICE:  plphp: Undefined index:  2
+WARNING:  plphp: Undefined array key 2
  php_arr_in 
 ------------
            
@@ -301,10 +301,10 @@ ERROR:  function declared to return array must return an array
 -- test recursive functions
 create function php_fib(int) returns int language plphp as $$
   if ($args[0] <= 1) { return 1; }
-  $r = spi_exec("select php_fib(${args[0]} - 1) as a");
+  $r = spi_exec("select php_fib({$args[0]} - 1) as a");
   $row = spi_fetch_row($r);
   $a = $row['a'];
-  $r = spi_exec("select php_fib(${args[0]} - 2) as b");
+  $r = spi_exec("select php_fib({$args[0]} - 2) as b");
   $row = spi_fetch_row($r);
   $b = $row['b'];
   return $a + $b;

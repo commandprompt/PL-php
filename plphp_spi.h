@@ -21,6 +21,8 @@
 
 /* resource type Id for SPIresult */
 extern int SPIres_rtype;
+/* resource type Id for a prepared SPI plan */
+extern int SPIplan_rtype;
 /* Function table */
 extern zend_function_entry spi_functions[];
 
@@ -38,8 +40,8 @@ extern HashTable *saved_symbol_table;
 typedef struct
 {
 	SPITupleTable  *SPI_tuptable;
-	uint32			SPI_processed;
-	uint32			current_row;
+	uint64			SPI_processed;	/* SPI_processed is uint64 since PG 11 */
+	uint64			current_row;
 	int				status;
 } php_SPIresult;
 
@@ -50,8 +52,20 @@ ZEND_FUNCTION(spi_status);
 ZEND_FUNCTION(spi_rewind);
 ZEND_FUNCTION(pg_raise);
 ZEND_FUNCTION(return_next);
+ZEND_FUNCTION(spi_prepare);
+ZEND_FUNCTION(spi_exec_prepared);
+ZEND_FUNCTION(spi_query_prepared);
+ZEND_FUNCTION(spi_freeplan);
+ZEND_FUNCTION(quote_literal);
+ZEND_FUNCTION(quote_nullable);
+ZEND_FUNCTION(quote_ident);
+ZEND_FUNCTION(elog);
+ZEND_FUNCTION(spi_commit);
+ZEND_FUNCTION(spi_rollback);
+ZEND_FUNCTION(subtransaction);
 
-void php_SPIresult_destroy(zend_rsrc_list_entry *rsrc TSRMLS_DC);
+void php_SPIresult_destroy(zend_resource *rsrc);
+void php_SPIplan_destroy(zend_resource *rsrc);
 
 #endif /* PLPHP_SPI_H */
 
