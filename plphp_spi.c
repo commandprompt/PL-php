@@ -122,6 +122,11 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_spi_noargs, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_subtransaction, 0, 0, 1)
+	ZEND_ARG_INFO(0, callback)
+	ZEND_ARG_VARIADIC_INFO(0, args)
+ZEND_END_ARG_INFO()
+
 /* SPI function table */
 zend_function_entry spi_functions[] =
 {
@@ -142,6 +147,7 @@ zend_function_entry spi_functions[] =
 	ZEND_FE(elog, arginfo_elog)
 	ZEND_FE(spi_commit, arginfo_spi_noargs)
 	ZEND_FE(spi_rollback, arginfo_spi_noargs)
+	ZEND_FE(subtransaction, arginfo_subtransaction)
 	ZEND_FE_END
 };
 
@@ -975,6 +981,81 @@ ZEND_FUNCTION(spi_rollback)
 		return;
 	}
 	PG_END_TRY();
+}
+
+/*
+ * subtransaction
+ * 		Run a PHP callable inside an internal subtransaction.  If the callable
+ * 		returns normally the subtransaction is committed and its return value is
+ * 		passed back; if it raises an error -- a PHP exception or a database
+ * 		error -- the subtransaction is rolled back and the error re-raised.
+ *
+ *		subtransaction(callable [, arg, ...])
+ */
+ZEND_FUNCTION(subtransaction)
+{
+	zend_fcall_info			fci;
+	zend_fcall_info_cache	fcc;
+	zval				   *fargs = NULL;
+	int						fargc = 0;
+	zval					result;
+	MemoryContext			oldcontext = CurrentMemoryContext;
+	ResourceOwner			oldowner = CurrentResourceOwner;
+	volatile bool			bailed = false;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "f*", &fci, &fcc,
+							  &fargs, &fargc) == FAILURE)
+	{
+		zend_error(E_WARNING, "cannot parse parameters in %s",
+				   get_active_function_name());
+		RETURN_FALSE;
+	}
+
+	ZVAL_UNDEF(&result);
+
+	BeginInternalSubTransaction(NULL);
+	MemoryContextSwitchTo(oldcontext);
+
+	/*
+	 * Run the callback.  In PL/php a database error surfaces as a Zend bailout
+	 * (zend_error(E_ERROR) from our SPI wrappers), so we catch that here; a
+	 * plain PHP "throw" instead leaves a pending exception.  Both mean the body
+	 * failed and the subtransaction must be rolled back.
+	 */
+	zend_try
+	{
+		fci.retval = &result;
+		fci.params = fargs;
+		fci.param_count = fargc;
+
+		if (zend_call_function(&fci, &fcc) == FAILURE)
+			zend_error(E_ERROR, "subtransaction: could not call the callback");
+	}
+	zend_catch
+	{
+		bailed = true;
+	}
+	zend_end_try();
+
+	if (bailed || EG(exception) != NULL)
+	{
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+
+		if (bailed)
+			zend_bailout();		/* re-propagate the database error */
+		return;					/* otherwise a PHP exception is pending */
+	}
+
+	/* Success: commit the subtransaction and hand back the body's value */
+	ReleaseCurrentSubTransaction();
+	MemoryContextSwitchTo(oldcontext);
+	CurrentResourceOwner = oldowner;
+
+	if (Z_TYPE(result) == IS_UNDEF)
+		RETURN_NULL();
+	ZVAL_COPY_VALUE(return_value, &result);
 }
 
 
