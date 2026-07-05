@@ -54,3 +54,43 @@ ERROR:  function php_invalidvarname(unknown) does not exist
 LINE 1: select php_invalidvarname('foo');
                ^
 HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+-- VARIADIC parameters: the executor delivers the collected array, so it
+-- behaves as an array argument (positional and named)
+CREATE FUNCTION vsum(VARIADIC nums int[]) RETURNS int LANGUAGE plphp AS $$
+    return array_sum($args[0]);
+$$;
+SELECT vsum(1, 2, 3);
+ vsum 
+------
+    6
+(1 row)
+
+SELECT vsum(10);
+ vsum 
+------
+   10
+(1 row)
+
+SELECT vsum(VARIADIC ARRAY[4, 5, 6]);
+ vsum 
+------
+   15
+(1 row)
+
+CREATE FUNCTION vjoin(sep text, VARIADIC parts text[]) RETURNS text LANGUAGE plphp AS $$
+    return implode($sep, $parts);     // named aliases work for both
+$$;
+SELECT vjoin('-', 'a', 'b', 'c');
+ vjoin 
+-------
+ a-b-c
+(1 row)
+
+-- VARIADIC "any" cannot be supported (arguments stay separate and untyped);
+-- the error is raised on first use
+CREATE FUNCTION vany(VARIADIC "any") RETURNS int LANGUAGE plphp AS $$
+    return $argc;
+$$;
+SELECT vany(1, 'x'::text, true);
+ERROR:  PL/php functions cannot accept VARIADIC "any" arguments
+DROP FUNCTION vsum(int[]), vjoin(text, text[]), vany("any");
