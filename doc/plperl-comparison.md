@@ -54,6 +54,13 @@ intentionally out of scope, with the rationale given.
 | (start proc, PL/Tcl-style) | `plphp.start_proc` | Runs a named PL/php function once per session |
 | `plperl.use_strict`   | — | No PHP equivalent; PHP is always "strict" about undefined functions |
 
+## Transforms
+
+| PL/Perl               | PL/php | Notes |
+|-----------------------|--------|-------|
+| `jsonb_plperl`        | `jsonb_plphp` **added** | `TRANSFORM FOR TYPE jsonb`: native values in both directions |
+| `bool_plperl`         | — | PL/php already maps `t`/`f`; a transform would add little |
+
 ## Intentionally not implemented
 
 - **Trusted/sandboxed language.** PL/Perl's `plperl` uses `Safe.pm` to restrict

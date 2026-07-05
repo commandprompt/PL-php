@@ -98,6 +98,35 @@ $$;
 SELECT php_an_array();   -- {{1,3,5},{2,4,6}}
 ```
 
+### Native jsonb via the `jsonb_plphp` transform
+
+By default a `jsonb` value crosses the boundary as its text form. Install the
+companion extension and declare `TRANSFORM FOR TYPE jsonb` to work with
+**native PHP values** instead — JSON objects/arrays become PHP arrays, numbers
+become int/float, booleans and null map directly, in both directions:
+
+```sql
+CREATE EXTENSION jsonb_plphp CASCADE;   -- pulls in plphp
+
+CREATE FUNCTION redact(doc jsonb, key text) RETURNS jsonb
+LANGUAGE plphp TRANSFORM FOR TYPE jsonb AS $$
+    $walk = function (&$node) use (&$walk, $args) {
+        foreach ($node as $k => &$v) {
+            if ((string) $k === $args[1]) $v = '[redacted]';
+            elseif (is_array($v))         $walk($v);
+        }
+    };
+    $walk($args[0]);
+    return $args[0];
+$$;
+```
+
+Notes (shared with `jsonb_plperl`): returning PHP `null` yields SQL `NULL`,
+not jsonb `null`; an empty PHP array comes back as `[]` (PHP cannot
+distinguish an empty list from an empty map — the same ambiguity
+`json_encode` has); JSON numbers arrive as PHP int when they fit, else float
+(precision beyond a double is lost).
+
 ## Composite types and records
 
 A composite argument arrives as an associative array keyed by column name; a

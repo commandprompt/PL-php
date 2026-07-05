@@ -181,6 +181,8 @@ typedef struct plphp_proc_desc
 	FmgrInfo	arg_out_func[FUNC_MAX_ARGS];
 	Oid			arg_typioparam[FUNC_MAX_ARGS];
 	bool		arg_is_array[FUNC_MAX_ARGS];
+	Oid			arg_transform[FUNC_MAX_ARGS];	/* FromSQL transform fn, or 0 */
+	Oid			ret_transform;					/* ToSQL transform fn, or 0 */
 	char		arg_typtype[FUNC_MAX_ARGS];
 	char		arg_argmode[FUNC_MAX_ARGS];
 	TupleDesc	args_out_tupdesc;
@@ -1366,6 +1368,25 @@ plphp_func_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 		ReleaseSysCache(retTypeTup);
 	}
 
+	if (phpret && OidIsValid(desc->ret_transform) &&
+		Z_TYPE_P(phpret) != IS_NULL)
+	{
+		/*
+		 * A TRANSFORM FOR TYPE applies to the return type: its ToSQL
+		 * function receives the zval (as "internal") and builds the Datum
+		 * directly, bypassing the text conversion below.
+		 */
+		retval = OidFunctionCall1(desc->ret_transform,
+								  PointerGetDatum(phpret));
+
+		zval_ptr_dtor(phpret);
+		efree(phpret);
+
+		REPORT_PHP_MEMUSAGE("finished calling user function");
+
+		return retval;
+	}
+
 	if (phpret)
 	{
 		switch (Z_TYPE_P(phpret))
@@ -1799,13 +1820,38 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 			/* Allocate memory for argument names unless all of them are OUT*/
 			if (argnames && prodesc->n_total_args > 0)
 				aliases = palloc((NAMEDATALEN + 32) * prodesc->n_total_args);
-			
+
+			/*
+			 * TRANSFORM FOR TYPE support: fetch the function's declared
+			 * transform types so arguments/results of those types can be
+			 * converted by their transform functions (e.g. jsonb_plphp).
+			 */
+			{
+				Datum		protrftypes_datum;
+				bool		trfisnull;
+				List	   *trftypes = NIL;
+
+				protrftypes_datum = SysCacheGetAttr(PROCOID, procTup,
+													Anum_pg_proc_protrftypes,
+													&trfisnull);
+				if (!trfisnull)
+					trftypes = oid_array_to_list(protrftypes_datum);
+
+				prodesc->ret_transform =
+					get_transform_tosql(procStruct->prorettype,
+										procStruct->prolang, trftypes);
+				for (i = 0; i < prodesc->n_total_args; i++)
+					prodesc->arg_transform[i] =
+						get_transform_fromsql(argtypes[i],
+											  procStruct->prolang, trftypes);
+			}
+
 			/* Main argument processing loop. */
 			for (i = 0; i < prodesc->n_total_args; i++)
 			{
 				prodesc->arg_typtype[i] = get_typtype(argtypes[i]);
 				if (prodesc->arg_typtype[i] != TYPTYPE_COMPOSITE)
-				{							
+				{
 					get_type_io_data(argtypes[i],
 									 IOFunc_output,
 									 &typlen,
@@ -2050,6 +2096,20 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 		{
 			if (PLPHP_ARG_ISNULL(fcinfo, j))
 				add_next_index_null(retval);
+			else if (OidIsValid(desc->arg_transform[i]))
+			{
+				/*
+				 * A TRANSFORM FOR TYPE applies: its FromSQL function returns
+				 * a freshly built zval (as "internal").
+				 */
+				zval	   *transformed;
+
+				transformed = (zval *)
+					DatumGetPointer(OidFunctionCall1(desc->arg_transform[i],
+													 PLPHP_ARG_VALUE(fcinfo, j)));
+				add_next_index_zval(retval, transformed);
+				efree(transformed);
+			}
 			else
 			{
 				char	   *tmp;

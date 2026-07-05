@@ -27,6 +27,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - **`plphp.on_init`** — a snippet of PHP source executed when the interpreter
   is first initialized in a session, before modules and `plphp.start_proc`;
   the counterpart of `plperl.on_init`.
+- **`jsonb_plphp` transform extension** — with `TRANSFORM FOR TYPE jsonb`,
+  jsonb arguments arrive as native PHP values (arrays/int/float/bool/null)
+  and PHP values convert straight back to jsonb, like `jsonb_plperl` (which
+  PL/Tcl has no equivalent of). PL/php core gained the `TRANSFORM FOR TYPE`
+  protocol support this builds on.
 
 - **A tested cookbook** (`doc/cookbook.md`): practical recipes — `filter_var`
   CHECK constraints, bcrypt passwords, HMAC tokens, recursive JSON reshaping,
