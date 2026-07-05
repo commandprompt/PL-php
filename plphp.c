@@ -47,6 +47,7 @@
 #include "fmgr.h"
 #include "funcapi.h"			/* needed for SRF support */
 #include "lib/stringinfo.h"
+#include "miscadmin.h"			/* work_mem, for the whole-array SRF form */
 #include "nodes/parsenodes.h"	/* InlineCodeBlock, for DO blocks */
 #if PG_VERSION_NUM >= 130000
 #include "tcop/cmdtag.h"		/* GetCommandTagName, for event triggers */
@@ -512,6 +513,27 @@ plphp_init(void)
 															  NULL,
 															  "plphp SPI plan",
 															  0);
+
+			/*
+			 * Register the PgError exception class: database errors are
+			 * thrown as PgError so user code can catch them.
+			 */
+			if (zend_eval_string(
+					"class PgError extends Exception {"
+					" public ?string $sqlstate = null;"
+					" public ?string $detail = null;"
+					" public ?string $hint = null;"
+					" public function getSQLState(): ?string { return $this->sqlstate; }"
+					" public function getDetail(): ?string { return $this->detail; }"
+					" public function getHint(): ?string { return $this->hint; }"
+					" }",
+					NULL, "plphp PgError class") == FAILURE)
+				elog(ERROR, "plphp: could not register the PgError class");
+			plphp_PgError_ce = zend_hash_str_find_ptr(CG(class_table),
+													  "pgerror",
+													  strlen("pgerror"));
+			if (plphp_PgError_ce == NULL)
+				elog(ERROR, "plphp: could not find the PgError class");
 
 			/* Ok, we're done */
 			plphp_first_call = false;
@@ -1446,12 +1468,36 @@ plphp_srf_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 	current_attinmeta = TupleDescGetAttInMetadata(current_tupledesc);
 
 	/*
-	 * Call the PHP function.  The user code must call return_next, which will
-	 * create and populate the tuplestore appropiately.
+	 * Call the PHP function.  The user code normally calls return_next,
+	 * which creates and populates the tuplestore.
 	 */
 	phpret = plphp_call_php_func(desc, fcinfo);
 
-	/* We don't use the return value */
+	/*
+	 * Alternatively (or additionally), the function may return the whole
+	 * result set as an array with one element per row, like PL/Perl's
+	 * "return a reference to an array" form.  Note we are already in the
+	 * per-query memory context here.
+	 */
+	if (EG(exception) == NULL && Z_TYPE_P(phpret) == IS_ARRAY)
+	{
+		zval	   *row;
+
+		if (!current_tuplestore)
+			current_tuplestore = tuplestore_begin_heap(true, false, work_mem);
+
+		ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(phpret), row)
+		{
+			HeapTuple	tup;
+
+			tup = plphp_srf_htup_from_zval(row, current_attinmeta,
+										   current_memcxt);
+			tuplestore_puttuple(current_tuplestore, tup);
+			heap_freetuple(tup);
+		}
+		ZEND_HASH_FOREACH_END();
+	}
+
 	zval_ptr_dtor(phpret);
 	efree(phpret);
 
@@ -2029,7 +2075,27 @@ plphp_pop_exception_message(void)
 	zmsg = zend_read_property(ex->ce, ex, "message", sizeof("message") - 1,
 							  1, &rv);
 	if (zmsg != NULL && Z_TYPE_P(zmsg) == IS_STRING && Z_STRLEN_P(zmsg) > 0)
-		msg = pstrdup(Z_STRVAL_P(zmsg));
+	{
+		/*
+		 * For an uncaught PgError, report "<message> at line <N>" to match
+		 * the format database errors have always had in PL/php.
+		 */
+		if (plphp_PgError_ce != NULL &&
+			instanceof_function(ex->ce, plphp_PgError_ce))
+		{
+			zval	rvl;
+			zval   *zline = zend_read_property(ex->ce, ex, "line",
+											   sizeof("line") - 1, 1, &rvl);
+
+			if (zline != NULL && Z_TYPE_P(zline) == IS_LONG)
+				msg = psprintf("%s at line %ld", Z_STRVAL_P(zmsg),
+							   (long) Z_LVAL_P(zline));
+			else
+				msg = pstrdup(Z_STRVAL_P(zmsg));
+		}
+		else
+			msg = pstrdup(Z_STRVAL_P(zmsg));
+	}
 	else
 		msg = pstrdup("uncaught PHP exception");
 
@@ -2195,6 +2261,32 @@ plphp_error_cb(int type, zend_string *error_filename,
 	trace = strstr(str, "\nStack trace:");
 	if (trace != NULL)
 		str = pnstrdup(str, trace - str);
+
+	/*
+	 * An uncaught PgError is just a database (or pg_raise/elog) error that no
+	 * PHP code chose to catch: report its original message, not PHP's
+	 * "Uncaught PgError: <msg> in <file>:<line>" wrapper (the line number is
+	 * re-appended below).
+	 */
+	if (strncmp(str, "Uncaught PgError: ", 18) == 0)
+	{
+		const char *in = NULL;
+		const char *p = str += 18;
+
+		/* find the last " in <something>:<digits>" and cut it off */
+		while ((p = strstr(p, " in ")) != NULL)
+		{
+			in = p;
+			p += 4;
+		}
+		if (in != NULL)
+		{
+			const char *colon = strrchr(in, ':');
+
+			if (colon != NULL && isdigit((unsigned char) colon[1]))
+				str = pnstrdup(str, in - str);
+		}
+	}
 
 	/*
 	 * PHP error classification is a bitmask, so this conversion is a bit

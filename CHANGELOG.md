@@ -9,6 +9,22 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Catchable database errors.** Every database error raised by an SPI call is
+  now thrown as a **`PgError`** PHP exception (with `getSQLState()`,
+  `getDetail()`, and `getHint()`), so `try`/`catch` works the way PL/Perl's
+  `eval` and PL/Tcl's `catch` do. `pg_raise('error', ...)` and
+  `elog('ERROR', ...)` throw a `PgError` with SQLSTATE `P0001`. Uncaught
+  errors abort the statement with the same message format as before. Database
+  errors inside `subtransaction()` callbacks are now catchable too.
+- **Whole-array set-returning functions.** An SRF may return the entire result
+  set as one array with one element per row (PL/Perl's "return a reference to
+  an array" form), instead of — or in addition to — calling `return_next`.
+  This had been PL/php 1.x behavior that 2.0 silently broke (such functions
+  returned zero rows).
+- **`spi_each(query, callable)`** — invoke a callback once per row, streaming
+  over a cursor; returning `false` stops early. The inline-loop equivalent of
+  PL/Tcl's `spi_exec -array a $query { body }`.
+
 - **A tested cookbook** (`doc/cookbook.md`): practical recipes — `filter_var`
   CHECK constraints, bcrypt passwords, HMAC tokens, recursive JSON reshaping,
   regex set-returning functions, a generic JSON-diff audit trigger, batch

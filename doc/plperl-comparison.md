@@ -30,6 +30,9 @@ intentionally out of scope, with the rationale given.
 | `spi_query`                   | `spi_query` **added** | Opens a cursor; streams rows without materializing |
 | `spi_fetchrow`                | `spi_fetchrow` **added** | Fetch next row from a cursor; auto-closes at exhaustion |
 | `spi_cursor_close`            | `spi_cursor_close` **added** | Abandon a cursor early |
+| errors trappable with `eval`  | `try`/`catch (PgError $e)` **added** | PgError carries SQLSTATE, detail, and hint (richer than `$@`) |
+| SRF returns array reference   | return an array from the SRF **added** | One element per row, as an alternative to `return_next` |
+| —                             | `spi_each(query, callable)` **added** | Streaming per-row callback; PL/Perl has no equivalent |
 | `elog(level, msg)`            | `elog` **added** | DEBUG/LOG/INFO/NOTICE/WARNING/ERROR; `pg_raise` remains as the older spelling |
 | `spi_prepare`                 | `spi_prepare` **added** | Type names given as SQL type strings |
 | `spi_exec_prepared`           | `spi_exec_prepared` **added** | |

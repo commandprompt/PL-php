@@ -25,8 +25,9 @@ its rationale.
 |-------------------------------|--------|-------|
 | `spi_exec ?-count n? cmd`     | `spi_exec(cmd [, limit])` | |
 | `spi_prepare` / `spi_execp`   | `spi_prepare` / `spi_exec_prepared` | |
-| row iteration (`-array`/loop) | `spi_fetch_row` loop | Same capability; PL/php has no inline loop-body sugar |
+| row iteration (`-array`/loop) | `spi_each(query, callable)` **added** | Streaming per-row callback, the inline-loop-body equivalent |
 | streaming row-by-row (portal) | `spi_query` / `spi_fetchrow` / `spi_cursor_close` **added** | Constant-memory iteration over large result sets |
+| `catch` with rich `errorCode` | `try`/`catch (PgError $e)` **added** | SQLSTATE via `getSQLState()`, plus detail and hint |
 | `quote`                       | `quote_literal` (+ `quote_nullable`, `quote_ident`) | |
 | `elog level msg`              | `elog(level, msg)` | DEBUG/LOG/INFO/NOTICE/WARNING/ERROR |
 | `subtransaction { body }`     | `subtransaction(callable, …)` **added** | |

@@ -1,0 +1,86 @@
+-- Catchable database errors: every database error (and pg_raise/elog ERROR)
+-- is thrown as a PgError exception, like PL/Perl's eval-trappable errors and
+-- PL/Tcl's catch, carrying SQLSTATE, detail, and hint.
+
+-- A failed query can be caught, with its SQLSTATE
+CREATE FUNCTION err_catch() RETURNS text LANGUAGE plphp AS $$
+	try {
+		spi_exec("select 1/0");
+		return "not reached";
+	} catch (PgError $e) {
+		return "caught [" . $e->getSQLState() . "] " . $e->getMessage();
+	}
+$$;
+SELECT err_catch();
+
+-- After catching, the function continues normally (the failed call's
+-- subtransaction was already rolled back)
+CREATE FUNCTION err_retry() RETURNS int LANGUAGE plphp AS $$
+	$n = 0;
+	foreach (array("select 1/0 as x", "select 41+1 as x") as $q) {
+		try {
+			$r = spi_exec($q);
+			$row = spi_fetch_row($r);
+			$n = $row['x'];
+		} catch (PgError $e) {
+			pg_raise('notice', 'skipped: ' . $e->getMessage());
+		}
+	}
+	return $n;
+$$;
+SELECT err_retry();
+
+-- detail is carried over
+CREATE TABLE errt (a int PRIMARY KEY);
+INSERT INTO errt VALUES (1);
+CREATE FUNCTION err_detail() RETURNS text LANGUAGE plphp AS $$
+	try {
+		spi_exec("insert into errt values (1)");
+	} catch (PgError $e) {
+		return $e->getSQLState() . " / " . $e->getDetail();
+	}
+	return "not reached";
+$$;
+SELECT err_detail();
+
+-- pg_raise('error') and elog('ERROR') raise catchable PgErrors (P0001,
+-- like PL/pgSQL's RAISE)
+CREATE FUNCTION err_raise() RETURNS text LANGUAGE plphp AS $$
+	try {
+		pg_raise('error', 'user-raised');
+	} catch (PgError $e) {
+		return "pg_raise: [" . $e->getSQLState() . "] " . $e->getMessage();
+	}
+$$;
+SELECT err_raise();
+CREATE FUNCTION err_elog() RETURNS text LANGUAGE plphp AS $$
+	try {
+		elog('ERROR', 'user-raised too');
+	} catch (PgError $e) {
+		return "elog: [" . $e->getSQLState() . "] " . $e->getMessage();
+	}
+$$;
+SELECT err_elog();
+
+-- An uncaught PgError aborts the statement with the original message
+CREATE FUNCTION err_uncaught() RETURNS void LANGUAGE plphp AS $$
+	spi_exec("select 1/0");
+$$;
+SELECT err_uncaught();
+
+-- Errors surfacing mid-iteration from a cursor are catchable too
+CREATE FUNCTION err_cursor() RETURNS text LANGUAGE plphp AS $$
+	$c = spi_query("select 1/(g-2) as x from generate_series(1,3) g");
+	$vals = array();
+	try {
+		while ($row = spi_fetchrow($c))
+			$vals[] = $row['x'];
+	} catch (PgError $e) {
+		spi_cursor_close($c);
+		return implode(",", $vals) . " then " . $e->getMessage();
+	}
+	return "not reached";
+$$;
+SELECT err_cursor();
+
+DROP TABLE errt;

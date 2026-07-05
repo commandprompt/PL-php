@@ -55,13 +55,13 @@ SELECT sx_nested();
 -- 1 was already present; 10 committed, 11 rolled back.
 SELECT id FROM sx ORDER BY id;
 
--- A database error inside a subtransaction rolls it back and aborts the
--- statement -- it is not catchable as a PHP exception.
+-- A database error inside a subtransaction rolls it back and surfaces as a
+-- catchable PgError.
 CREATE FUNCTION sx_dberr() RETURNS void LANGUAGE plphp AS $$
     try {
         subtransaction(function() { spi_exec("insert into sx values (1/0)"); });
-    } catch (\Throwable $e) {
-        pg_raise('notice', 'this is not reached for a database error');
+    } catch (PgError $e) {
+        pg_raise('notice', 'caught ' . $e->getSQLState() . ': ' . $e->getMessage());
     }
 $$;
 SELECT sx_dberr();
