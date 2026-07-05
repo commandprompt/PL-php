@@ -51,6 +51,8 @@ CREATE OR REPLACE FUNCTION php_get_shared_ary (text) RETURNS text[] AS $$
   global $_SHARED;
   return $_SHARED[$args[0]];
 $$ LANGUAGE plphp;
+-- A text value that merely looks like an array stays a string: it comes
+-- back verbatim, and returning it from a text[] function is an error.
 SELECT php_set_shared('fourth', $${'hip', 'hooray'}$$);
  php_set_shared 
 ----------------
@@ -58,26 +60,44 @@ SELECT php_set_shared('fourth', $${'hip', 'hooray'}$$);
 (1 row)
 
 SELECT php_get_shared('fourth');
-ERROR:  this plphp function cannot return arrays
+  php_get_shared   
+-------------------
+ {'hip', 'hooray'}
+(1 row)
+
 SELECT php_get_shared_ary('fourth');
+ERROR:  function declared to return array must return an array
+-- A real array shared between calls
+CREATE OR REPLACE FUNCTION php_set_shared_ary (text, text[]) RETURNS text AS $$
+  global $_SHARED;
+  $_SHARED[$args[0]] = $args[1];
+  return 'ok';
+$$ LANGUAGE plphp;
+SELECT php_set_shared_ary('fifth', ARRAY['hip', 'hooray']);
+ php_set_shared_ary 
+--------------------
+ ok
+(1 row)
+
+SELECT php_get_shared_ary('fifth');
  php_get_shared_ary 
 --------------------
  {hip,hooray}
 (1 row)
 
-SELECT (php_get_shared_ary('fourth'))[1];
+SELECT (php_get_shared_ary('fifth'))[1];
  php_get_shared_ary 
 --------------------
  hip
 (1 row)
 
-SELECT (php_get_shared_ary('fourth'))[1];
+SELECT (php_get_shared_ary('fifth'))[1];
  php_get_shared_ary 
 --------------------
  hip
 (1 row)
 
-SELECT (php_get_shared_ary('fourth'))[2];
+SELECT (php_get_shared_ary('fifth'))[2];
  php_get_shared_ary 
 --------------------
  hooray

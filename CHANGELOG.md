@@ -5,6 +5,39 @@ All notable changes to PL/php are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **A tested cookbook** (`doc/cookbook.md`): practical recipes — `filter_var`
+  CHECK constraints, bcrypt passwords, HMAC tokens, recursive JSON reshaping,
+  regex set-returning functions, a generic JSON-diff audit trigger, batch
+  processing with periodic commits, streaming scans that stop early, CSV and
+  XML shredding, and zlib compression. Every recipe in the "Tested" section
+  runs in the new `cookbook` regression test.
+- New `coverage` regression test pinning previously-untested paths: DML and
+  utility statements through `spi_exec`, trigger arguments (`$_TD['args']`),
+  cursor behavior across `spi_commit` and rolled-back subtransactions,
+  `plphp.start_proc` failure handling, multibyte and TOAST-sized values, PHP
+  exception handling, and DO-block runtime errors.
+
+### Fixed
+
+- **Array conversion rewritten in both directions**, fixing three
+  long-standing FIXMEs:
+  - Returning a PHP array containing `null` now produces a SQL `NULL` element
+    instead of raising an error.
+  - String elements are now properly quoted and escaped on output; embedded
+    quotes, backslashes, commas, braces, and spaces survive the round trip.
+  - Array *input* is now parsed with a real parser instead of being rewritten
+    into PHP source and passed through `zend_eval_string`. Unquoted text
+    elements (e.g. `{foo,bar}`) previously crashed with an undefined-constant
+    error and now arrive as strings; quoted/escaped elements are decoded
+    correctly; data no longer flows through `eval()`.
+- Array arguments are now detected from the argument's declared type instead
+  of the old "value starts with `{`" heuristic, so a `text` argument whose
+  value happens to start with a brace is no longer misparsed as an array.
+
 ## [2.1.0] — 2026-07-05
 
 ### Added

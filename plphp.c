@@ -179,6 +179,7 @@ typedef struct plphp_proc_desc
 	int			n_mixed_args;
 	FmgrInfo	arg_out_func[FUNC_MAX_ARGS];
 	Oid			arg_typioparam[FUNC_MAX_ARGS];
+	bool		arg_is_array[FUNC_MAX_ARGS];
 	char		arg_typtype[FUNC_MAX_ARGS];
 	char		arg_argmode[FUNC_MAX_ARGS];
 	TupleDesc	args_out_tupdesc;
@@ -1740,6 +1741,8 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 									 &typoutput);
 					perm_fmgr_info(typoutput, &(prodesc->arg_out_func[i]));
 					prodesc->arg_typioparam[i] = typioparam;
+					prodesc->arg_is_array[i] =
+						OidIsValid(get_element_type(argtypes[i]));
 				}
 				if (aliases && argnames[i][0] != '\0')
 				{
@@ -1931,6 +1934,8 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 			perm_fmgr_info(typeStruct->typoutput,
 						   &(desc->arg_out_func[i]));
 			desc->arg_typioparam[i] = typeStruct->typelem;
+			desc->arg_is_array[i] = (typeStruct->typlen == -1 &&
+									 OidIsValid(typeStruct->typelem));
 			ReleaseSysCache(typeTup);
 		}
 
@@ -1981,11 +1986,7 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 				 */
 				tmp = OutputFunctionCall(&(desc->arg_out_func[i]),
 										 PLPHP_ARG_VALUE(fcinfo, j));
-				/*
-				 * FIXME -- this is bogus.  Not every value starting with { is
-				 * an array.  Figure out a better method for detecting arrays.
-				 */
-				if (tmp[0] == '{')
+				if (desc->arg_is_array[i])
 				{
 					zval	   *hashref;
 
