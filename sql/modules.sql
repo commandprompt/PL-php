@@ -13,6 +13,9 @@ CREATE FUNCTION my_start() RETURNS void LANGUAGE plphp AS $$
 $$;
 SET plphp.start_proc = 'my_start';
 
+-- An on_init snippet, run just before the modules are loaded.
+SET plphp.on_init = 'function oninit_greet($who) { return "hello, $who"; }';
+
 -- Two module rows (loaded in modseq order): one defines a function, the other
 -- a class -- both must become available session-wide.
 CREATE TABLE plphp_modules (modname text, modseq int, modsrc text);
@@ -33,8 +36,17 @@ CREATE FUNCTION use_class(text) RETURNS text LANGUAGE plphp AS $$
 $$;
 SELECT use_class('bob');
 
+-- A helper defined by plphp.on_init is available session-wide.
+CREATE FUNCTION use_on_init() RETURNS text LANGUAGE plphp AS $$
+    return oninit_greet('world');
+$$;
+SELECT use_on_init();
+RESET plphp.on_init;
+
 DROP TABLE plphp_modules;
+DROP FUNCTION use_on_init();
 DROP FUNCTION use_class(text);
 DROP FUNCTION use_mod(int);
 DROP FUNCTION my_start();
 DROP FUNCTION _load();
+

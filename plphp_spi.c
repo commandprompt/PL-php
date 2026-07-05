@@ -37,6 +37,7 @@
 
 /* PHP stuff */
 #include "php.h"
+#include "zend_exceptions.h"
 
 /* PostgreSQL stuff */
 #include "access/htup_details.h"
@@ -61,6 +62,39 @@
 int SPIres_rtype;
 /* resource type Id for a prepared SPI plan */
 int SPIplan_rtype;
+/* The PgError exception class, registered in plphp_init */
+zend_class_entry *plphp_PgError_ce = NULL;
+
+/*
+ * plphp_throw_pg_error
+ * 		Turn a copied ErrorData into a pending PgError PHP exception, so that
+ * 		database errors can be caught with try/catch (like PL/Perl's eval or
+ * 		PL/Tcl's catch).  The caller must already have rolled back its
+ * 		subtransaction and restored the memory context/resource owner.
+ * 		Consumes edata.
+ */
+void
+plphp_throw_pg_error(ErrorData *edata)
+{
+	zend_object *ex;
+
+	ex = zend_throw_exception(plphp_PgError_ce, edata->message, 0);
+	if (ex != NULL)
+	{
+		zend_update_property_string(plphp_PgError_ce, ex,
+									"sqlstate", strlen("sqlstate"),
+									unpack_sql_state(edata->sqlerrcode));
+		if (edata->detail != NULL)
+			zend_update_property_string(plphp_PgError_ce, ex,
+										"detail", strlen("detail"),
+										edata->detail);
+		if (edata->hint != NULL)
+			zend_update_property_string(plphp_PgError_ce, ex,
+										"hint", strlen("hint"),
+										edata->hint);
+	}
+	FreeErrorData(edata);
+}
 
 /*
  * A prepared plan, exposed to PHP as a "plphp SPI plan" resource.
@@ -118,6 +152,11 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_spi_cursor, 0, 0, 1)
 	ZEND_ARG_INFO(0, cursor)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_spi_each, 0, 0, 2)
+	ZEND_ARG_INFO(0, query)
+	ZEND_ARG_INFO(0, callback)
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_quote, 0, 0, 1)
 	ZEND_ARG_INFO(0, string)
 ZEND_END_ARG_INFO()
@@ -151,6 +190,7 @@ zend_function_entry spi_functions[] =
 	ZEND_FE(spi_query, arginfo_spi_query)
 	ZEND_FE(spi_fetchrow, arginfo_spi_cursor)
 	ZEND_FE(spi_cursor_close, arginfo_spi_cursor)
+	ZEND_FE(spi_each, arginfo_spi_each)
 	ZEND_FE(spi_freeplan, arginfo_spi_freeplan)
 	ZEND_FE(quote_literal, arginfo_quote)
 	ZEND_FE(quote_nullable, arginfo_quote)
@@ -236,10 +276,8 @@ ZEND_FUNCTION(spi_exec)
 		MemoryContextSwitchTo(oldcontext);
 		CurrentResourceOwner = oldowner;
 
-		/* bail PHP out */
-		zend_error(E_ERROR, "%s", edata->message);
-
-		/* Can't get here, but keep compiler quiet */
+		/* leave a catchable PgError pending and bail out of this call */
+		plphp_throw_pg_error(edata);
 		return;
 	}
 	PG_END_TRY();
@@ -420,13 +458,25 @@ ZEND_FUNCTION(pg_raise)
 	}
 
 	if (strcasecmp(level, "ERROR") == 0)
-		elevel = E_ERROR;
+	{
+		/* raise a catchable PgError, like PL/pgSQL's RAISE (SQLSTATE P0001) */
+		zend_object *ex = zend_throw_exception(plphp_PgError_ce, message, 0);
+
+		if (ex != NULL)
+			zend_update_property_string(plphp_PgError_ce, ex,
+										"sqlstate", strlen("sqlstate"),
+										"P0001");
+		return;
+	}
 	else if (strcasecmp(level, "WARNING") == 0)
 		elevel = E_WARNING;
 	else if (strcasecmp(level, "NOTICE") == 0)
 		elevel = E_NOTICE;
 	else
+	{
 		zend_error(E_ERROR, "incorrect log level");
+		return;
+	}
 
 	zend_error(elevel, "%s", message);
 }
@@ -666,7 +716,7 @@ ZEND_FUNCTION(spi_prepare)
 			free(typinput);
 		if (typioparam)
 			free(typioparam);
-		zend_error(E_ERROR, "%s", edata->message);
+		plphp_throw_pg_error(edata);
 		return;
 	}
 	PG_END_TRY();
@@ -772,7 +822,7 @@ ZEND_FUNCTION(spi_exec_prepared)
 		RollbackAndReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(oldcontext);
 		CurrentResourceOwner = oldowner;
-		zend_error(E_ERROR, "%s", edata->message);
+		plphp_throw_pg_error(edata);
 		return;
 	}
 	PG_END_TRY();
@@ -851,7 +901,7 @@ ZEND_FUNCTION(spi_query)
 		RollbackAndReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(oldcontext);
 		CurrentResourceOwner = oldowner;
-		zend_error(E_ERROR, "%s", edata->message);
+		plphp_throw_pg_error(edata);
 		return;
 	}
 	PG_END_TRY();
@@ -946,7 +996,7 @@ ZEND_FUNCTION(spi_query_prepared)
 		RollbackAndReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(oldcontext);
 		CurrentResourceOwner = oldowner;
-		zend_error(E_ERROR, "%s", edata->message);
+		plphp_throw_pg_error(edata);
 		return;
 	}
 	PG_END_TRY();
@@ -1010,7 +1060,7 @@ ZEND_FUNCTION(spi_fetchrow)
 		RollbackAndReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(oldcontext);
 		CurrentResourceOwner = oldowner;
-		zend_error(E_ERROR, "%s", edata->message);
+		plphp_throw_pg_error(edata);
 		return;
 	}
 	PG_END_TRY();
@@ -1068,12 +1118,169 @@ ZEND_FUNCTION(spi_cursor_close)
 		RollbackAndReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(oldcontext);
 		CurrentResourceOwner = oldowner;
-		zend_error(E_ERROR, "%s", edata->message);
+		plphp_throw_pg_error(edata);
 		return;
 	}
 	PG_END_TRY();
 
 	RETURN_TRUE;
+}
+
+/*
+ * spi_each
+ * 		Run a query and invoke a callback once per row, streaming over a
+ * 		cursor (the row never materializes beyond the one being processed).
+ * 		The callback receives the row as an associative array; returning
+ * 		(exactly) false stops the iteration early.  Returns the number of
+ * 		rows the callback was invoked for.
+ *
+ * The inline-loop-body equivalent of PL/Tcl's "spi_exec -array a $query
+ * { body }".
+ */
+ZEND_FUNCTION(spi_each)
+{
+	char	   *query;
+	size_t		query_len;
+	zend_fcall_info			fci;
+	zend_fcall_info_cache	fcc;
+	char	   *cursor;
+	zend_long	count = 0;
+	MemoryContext oldcontext = CurrentMemoryContext;
+	ResourceOwner oldowner = CurrentResourceOwner;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "sf",
+							  &query, &query_len, &fci, &fcc) == FAILURE)
+	{
+		zend_error(E_WARNING, "cannot parse parameters in %s",
+				   get_active_function_name());
+		RETURN_FALSE;
+	}
+
+	/* Open the cursor, exactly as spi_query does */
+	BeginInternalSubTransaction(NULL);
+	MemoryContextSwitchTo(oldcontext);
+
+	PG_TRY();
+	{
+		SPIPlanPtr	plan;
+		Portal		portal;
+
+		plan = SPI_prepare(query, 0, NULL);
+		if (plan == NULL)
+			elog(ERROR, "spi_each: SPI_prepare failed: %s",
+				 SPI_result_code_string(SPI_result));
+
+		portal = SPI_cursor_open(NULL, plan, NULL, NULL, false);
+		if (portal == NULL)
+			elog(ERROR, "spi_each: SPI_cursor_open failed");
+		SPI_freeplan(plan);
+
+		/* survives the subtransaction's memory context */
+		cursor = pstrdup(portal->name);
+
+		ReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		MemoryContextSwitchTo(oldcontext);
+		edata = CopyErrorData();
+		FlushErrorState();
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+		plphp_throw_pg_error(edata);
+		return;
+	}
+	PG_END_TRY();
+
+	for (;;)
+	{
+		zval	   *row = NULL;
+		zval		cbret;
+		zval		cbarg;
+		bool		stop;
+
+		/* Fetch one row, exactly as spi_fetchrow does */
+		BeginInternalSubTransaction(NULL);
+		MemoryContextSwitchTo(oldcontext);
+
+		PG_TRY();
+		{
+			/* re-find by name: the callback may have killed the portal */
+			Portal		portal = SPI_cursor_find(cursor);
+
+			if (portal != NULL)
+			{
+				SPI_cursor_fetch(portal, true, 1);
+				if (SPI_processed == 0)
+					SPI_cursor_close(portal);
+				else
+					row = plphp_zval_from_tuple(SPI_tuptable->vals[0],
+												SPI_tuptable->tupdesc);
+				SPI_freetuptable(SPI_tuptable);
+			}
+
+			ReleaseCurrentSubTransaction();
+			MemoryContextSwitchTo(oldcontext);
+			CurrentResourceOwner = oldowner;
+		}
+		PG_CATCH();
+		{
+			ErrorData  *edata;
+
+			MemoryContextSwitchTo(oldcontext);
+			edata = CopyErrorData();
+			FlushErrorState();
+			RollbackAndReleaseCurrentSubTransaction();
+			MemoryContextSwitchTo(oldcontext);
+			CurrentResourceOwner = oldowner;
+			plphp_throw_pg_error(edata);
+			return;
+		}
+		PG_END_TRY();
+
+		if (row == NULL)
+			break;				/* cursor exhausted (and auto-closed) */
+
+		/* Hand the row to the callback */
+		ZVAL_COPY_VALUE(&cbarg, row);
+		efree(row);
+		ZVAL_UNDEF(&cbret);
+		fci.retval = &cbret;
+		fci.params = &cbarg;
+		fci.param_count = 1;
+
+		if (zend_call_function(&fci, &fcc) == FAILURE)
+		{
+			zval_ptr_dtor(&cbarg);
+			zend_error(E_WARNING, "spi_each: could not call the callback");
+			RETURN_FALSE;
+		}
+		count++;
+
+		stop = (Z_TYPE(cbret) == IS_FALSE);
+		zval_ptr_dtor(&cbret);
+		zval_ptr_dtor(&cbarg);
+
+		if (EG(exception) != NULL || stop)
+		{
+			/* abandon the cursor; ignore errors if it is already gone */
+			Portal		portal = SPI_cursor_find(cursor);
+
+			if (portal != NULL)
+				SPI_cursor_close(portal);
+			if (EG(exception) != NULL)
+				return;			/* propagate the callback's exception */
+			break;
+		}
+	}
+
+	pfree(cursor);
+	RETURN_LONG(count);
 }
 
 /*
@@ -1209,8 +1416,15 @@ ZEND_FUNCTION(elog)
 	}
 
 	if (elevel == ERROR)
-		/* route through the PHP error path so it unwinds cleanly */
-		zend_error(E_ERROR, "%s", message);
+	{
+		/* raise a catchable PgError, like PL/pgSQL's RAISE (SQLSTATE P0001) */
+		zend_object *ex = zend_throw_exception(plphp_PgError_ce, message, 0);
+
+		if (ex != NULL)
+			zend_update_property_string(plphp_PgError_ce, ex,
+										"sqlstate", strlen("sqlstate"),
+										"P0001");
+	}
 	else
 		ereport(elevel, (errmsg("%s", message)));
 }
@@ -1240,7 +1454,7 @@ ZEND_FUNCTION(spi_commit)
 		MemoryContextSwitchTo(oldcontext);
 		edata = CopyErrorData();
 		FlushErrorState();
-		zend_error(E_ERROR, "%s", edata->message);
+		plphp_throw_pg_error(edata);
 		return;
 	}
 	PG_END_TRY();
@@ -1270,7 +1484,7 @@ ZEND_FUNCTION(spi_rollback)
 		MemoryContextSwitchTo(oldcontext);
 		edata = CopyErrorData();
 		FlushErrorState();
-		zend_error(E_ERROR, "%s", edata->message);
+		plphp_throw_pg_error(edata);
 		return;
 	}
 	PG_END_TRY();
@@ -1310,9 +1524,9 @@ ZEND_FUNCTION(subtransaction)
 	MemoryContextSwitchTo(oldcontext);
 
 	/*
-	 * Run the callback.  In PL/php a database error surfaces as a Zend bailout
-	 * (zend_error(E_ERROR) from our SPI wrappers), so we catch that here; a
-	 * plain PHP "throw" instead leaves a pending exception.  Both mean the body
+	 * Run the callback.  A database error or PHP "throw" leaves a pending
+	 * exception (PgError for the former); a genuine PHP fatal error still
+	 * surfaces as a Zend bailout, which we catch here.  Either way the body
 	 * failed and the subtransaction must be rolled back.
 	 */
 	zend_try

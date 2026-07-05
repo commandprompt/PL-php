@@ -50,7 +50,8 @@ SELECT hello('world');   -- Hello, world!
 | 📝 **Prepared statements** | `spi_prepare` / `spi_exec_prepared` / `spi_query_prepared` / `spi_freeplan`. |
 | 🔐 **Transaction control** | `spi_commit` / `spi_rollback` in procedures, plus `subtransaction()` blocks. |
 | 🧰 **Utilities** | `quote_literal` / `quote_nullable` / `quote_ident`, `elog`, `$_SHARED`. |
-| 📦 **Session setup** | Anonymous `DO` blocks, `plphp_modules` autoloading, and a `plphp.start_proc` hook. |
+| 📦 **Session setup** | Anonymous `DO` blocks, `plphp_modules` autoloading, `plphp.on_init`, and a `plphp.start_proc` hook. |
+| 🧬 **Native jsonb** | The `jsonb_plphp` transform: `TRANSFORM FOR TYPE jsonb` maps jsonb ⇄ PHP arrays directly. |
 
 See the [**language reference**](doc/plphp.md) for the full API, the
 [**cookbook**](doc/cookbook.md) for practical, regression-tested recipes, and

@@ -98,6 +98,35 @@ $$;
 SELECT php_an_array();   -- {{1,3,5},{2,4,6}}
 ```
 
+### Native jsonb via the `jsonb_plphp` transform
+
+By default a `jsonb` value crosses the boundary as its text form. Install the
+companion extension and declare `TRANSFORM FOR TYPE jsonb` to work with
+**native PHP values** instead — JSON objects/arrays become PHP arrays, numbers
+become int/float, booleans and null map directly, in both directions:
+
+```sql
+CREATE EXTENSION jsonb_plphp CASCADE;   -- pulls in plphp
+
+CREATE FUNCTION redact(doc jsonb, key text) RETURNS jsonb
+LANGUAGE plphp TRANSFORM FOR TYPE jsonb AS $$
+    $walk = function (&$node) use (&$walk, $args) {
+        foreach ($node as $k => &$v) {
+            if ((string) $k === $args[1]) $v = '[redacted]';
+            elseif (is_array($v))         $walk($v);
+        }
+    };
+    $walk($args[0]);
+    return $args[0];
+$$;
+```
+
+Notes (shared with `jsonb_plperl`): returning PHP `null` yields SQL `NULL`,
+not jsonb `null`; an empty PHP array comes back as `[]` (PHP cannot
+distinguish an empty list from an empty map — the same ambiguity
+`json_encode` has); JSON numbers arrive as PHP int when they fit, else float
+(precision beyond a double is lost).
+
 ## Composite types and records
 
 A composite argument arrives as an associative array keyed by column name; a
@@ -139,6 +168,18 @@ SELECT * FROM add_sub(10, 4);   -- sum=14, diff=6
 
 Named arguments must be valid PHP identifiers.
 
+The same convention works for **INOUT parameters in procedures** — assign to
+the variable; `CALL` reports the resulting values (always as a row, even for
+a single INOUT parameter):
+
+```sql
+CREATE PROCEDURE bump(INOUT counter integer) LANGUAGE plphp AS $$
+    $counter = $counter + 1;
+$$;
+
+CALL bump(41);   -- counter=42
+```
+
 ## Set-returning functions
 
 Declare the function `RETURNS SETOF ...` (or `RETURNS TABLE(...)`) and call
@@ -159,6 +200,23 @@ SELECT * FROM squares(3);            -- (1,1), (2,4), (3,9)
 `return_next($value)` emits an explicit row (scalar, array, or associative
 array matching the result columns). `return_next()` with no argument emits a row
 built from the current OUT/TABLE variables.
+
+Alternatively, return the whole result set at once as an array with one
+element per row (like PL/Perl's "return a reference to an array" form) — handy
+when the rows are already collected in a variable:
+
+```sql
+CREATE FUNCTION firstnames() RETURNS SETOF text LANGUAGE plphp AS $$
+    $r = spi_exec("select fullname from people");
+    $out = array();
+    while ($row = spi_fetch_row($r))
+        $out[] = explode(' ', $row['fullname'])[0];
+    return $out;
+$$;
+```
+
+If a function both calls `return_next` and returns an array, the array's rows
+are appended after the `return_next` ones.
 
 ## Trigger functions
 
@@ -250,6 +308,10 @@ fetch rows one at a time:
   automatically).
 - `spi_cursor_close(cursor)` — close a cursor early, before exhausting it.
   Closing an unknown or already-closed cursor is harmless.
+- `spi_each(query, callable)` — run `query` and invoke `callable($row)` once
+  per row, streaming over a cursor; return `false` from the callable to stop
+  early. Returns the number of rows processed. The inline-loop equivalent of
+  PL/Tcl's `spi_exec -array a $query { body }`.
 
 Cursors not fetched to completion or closed explicitly are destroyed at the
 end of the transaction.
@@ -341,11 +403,12 @@ CREATE FUNCTION safe_insert(text) RETURNS text LANGUAGE plphp AS $$
 $$;
 ```
 
-Note: a *database* error inside the block (for example a constraint violation
-surfaced by `spi_exec`) rolls the subtransaction back and then aborts the
-statement — under PL/php's error model it is re-raised as a PostgreSQL error
-rather than a catchable PHP exception. Throw a PHP exception yourself if you
-want the caller to be able to recover.
+A *database* error inside the block (for example a constraint violation
+surfaced by `spi_exec`) likewise rolls the subtransaction back and propagates
+as a catchable [`PgError`](#errors-and-exceptions). Note that each SPI call
+already runs in its own subtransaction, so `try`/`catch` around a single call
+does not need `subtransaction()` — use it to make a *group* of statements
+succeed or fail atomically.
 
 ## Quoting helpers
 
@@ -424,19 +487,56 @@ function to call once, when the interpreter is first initialized in a session:
 SET plphp.start_proc = 'my_setup';
 ```
 
-Both run inside the first PL/php call of the session, after the interpreter is
-ready.
+**on_init.** The `plphp.on_init` setting holds a snippet of *PHP source* to
+execute at initialization — the counterpart of `plperl.on_init`. Use it for
+setup that doesn't warrant a modules table, such as defining a helper or
+setting an include path:
+
+```sql
+SET plphp.on_init = 'function app_env() { return "production"; }';
+```
+
+All three run inside the first PL/php call of the session, in this order:
+`on_init`, then modules, then `start_proc`.
 
 ## Errors and exceptions
 
 Function bodies are syntax-checked at `CREATE FUNCTION` time by the validator;
 an invalid body is rejected with the PHP parse error.
 
-At run time, an uncaught PHP exception (for example, calling an undefined
-function or a `TypeError`) is reported as a PostgreSQL `ERROR`, aborting the
-statement. PHP deprecation notices (such as the legacy `"${var}"` string
-interpolation) are surfaced as PostgreSQL `NOTICE`s and are not fatal. You can
-raise an error yourself with `pg_raise('error', ...)`.
+**Database errors are catchable.** Every database error raised by an SPI call
+(`spi_exec`, `spi_fetchrow`, `spi_commit`, ...) is thrown as a **`PgError`**
+exception — the counterpart of PL/Perl's `eval`-trappable errors and PL/Tcl's
+`catch`. The failed call's subtransaction has already been rolled back when
+you catch it, so the session is in a consistent state and the function can
+simply continue:
+
+```sql
+CREATE FUNCTION upsertish(int) RETURNS text LANGUAGE plphp AS $$
+    try {
+        spi_exec("insert into t values ({$args[0]})");
+        return 'inserted';
+    } catch (PgError $e) {
+        if ($e->getSQLState() == '23505') {    -- unique_violation
+            spi_exec("update t set n = n + 1 where id = {$args[0]}");
+            return 'bumped';
+        }
+        throw $e;                              -- anything else: re-raise
+    }
+$$;
+```
+
+`PgError extends Exception` and adds:
+
+- `getSQLState()` — the five-character SQLSTATE code (e.g. `23505`).
+- `getDetail()` / `getHint()` — the error's DETAIL and HINT, or `null`.
+
+`pg_raise('error', ...)` and `elog('ERROR', ...)` also throw a `PgError`
+(SQLSTATE `P0001`, like PL/pgSQL's `RAISE`). An **uncaught** `PgError` — or
+any other uncaught PHP exception, such as a `TypeError` — is reported as a
+PostgreSQL `ERROR`, aborting the statement. PHP deprecation notices (such as
+the legacy `"${var}"` string interpolation) are surfaced as PostgreSQL
+`NOTICE`s and are not fatal.
 
 ## Security
 

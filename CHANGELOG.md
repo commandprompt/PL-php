@@ -9,6 +9,30 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Catchable database errors.** Every database error raised by an SPI call is
+  now thrown as a **`PgError`** PHP exception (with `getSQLState()`,
+  `getDetail()`, and `getHint()`), so `try`/`catch` works the way PL/Perl's
+  `eval` and PL/Tcl's `catch` do. `pg_raise('error', ...)` and
+  `elog('ERROR', ...)` throw a `PgError` with SQLSTATE `P0001`. Uncaught
+  errors abort the statement with the same message format as before. Database
+  errors inside `subtransaction()` callbacks are now catchable too.
+- **Whole-array set-returning functions.** An SRF may return the entire result
+  set as one array with one element per row (PL/Perl's "return a reference to
+  an array" form), instead of — or in addition to — calling `return_next`.
+  This had been PL/php 1.x behavior that 2.0 silently broke (such functions
+  returned zero rows).
+- **`spi_each(query, callable)`** — invoke a callback once per row, streaming
+  over a cursor; returning `false` stops early. The inline-loop equivalent of
+  PL/Tcl's `spi_exec -array a $query { body }`.
+- **`plphp.on_init`** — a snippet of PHP source executed when the interpreter
+  is first initialized in a session, before modules and `plphp.start_proc`;
+  the counterpart of `plperl.on_init`.
+- **`jsonb_plphp` transform extension** — with `TRANSFORM FOR TYPE jsonb`,
+  jsonb arguments arrive as native PHP values (arrays/int/float/bool/null)
+  and PHP values convert straight back to jsonb, like `jsonb_plperl` (which
+  PL/Tcl has no equivalent of). PL/php core gained the `TRANSFORM FOR TYPE`
+  protocol support this builds on.
+
 - **A tested cookbook** (`doc/cookbook.md`): practical recipes — `filter_var`
   CHECK constraints, bcrypt passwords, HMAC tokens, recursive JSON reshaping,
   regex set-returning functions, a generic JSON-diff audit trigger, batch
@@ -23,6 +47,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **INOUT parameters in procedures work.** `CALL` on a PL/php procedure with
+  INOUT parameters used to fail ("function returning record called in
+  context that cannot accept type record"): a procedure's result is always a
+  record — even with a single INOUT parameter — which broke both the
+  single-OUT scalar-return shortcut and the record descriptor lookup (which
+  needed a `ReturnSetInfo` that `CALL` never supplies; it is now derived
+  from the parameter declarations via `get_call_result_type`). The usual
+  assignment convention now works: `$param = ...;`.
 - **Array conversion rewritten in both directions**, fixing three
   long-standing FIXMEs:
   - Returning a PHP array containing `null` now produces a SQL `NULL` element

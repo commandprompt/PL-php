@@ -92,3 +92,38 @@ $$;
 select test_cursor_error(1);
 select test_cursor_error(0);
 select test_cursor_error(1);
+
+-- spi_each: run a callback once per row, streaming over a cursor
+create function test_each() returns int language plphp as $$
+	$sum = 0;
+	$n = spi_each("select generate_series(1, 5) as g", function ($row) use (&$sum) {
+		$sum += $row['g'];
+	});
+	return $n * 1000 + $sum;
+$$;
+
+-- 5 rows, sum 15
+select test_each();
+
+-- returning false from the callback stops the iteration early
+create function test_each_stop() returns int language plphp as $$
+	return spi_each("select generate_series(1, 1000000) as g", function ($row) {
+		if ($row['g'] >= 3)
+			return false;
+	});
+$$;
+select test_each_stop();
+
+-- an exception thrown by the callback propagates (and the cursor is closed)
+create function test_each_throw() returns text language plphp as $$
+	try {
+		spi_each("select generate_series(1, 10) as g", function ($row) {
+			if ($row['g'] == 2)
+				throw new Exception("stop at 2");
+		});
+	} catch (Exception $e) {
+		return "caught: " . $e->getMessage();
+	}
+	return "not reached";
+$$;
+select test_each_throw();

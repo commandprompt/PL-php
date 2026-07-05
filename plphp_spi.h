@@ -25,6 +25,8 @@ extern int SPIres_rtype;
 extern int SPIplan_rtype;
 /* Function table */
 extern zend_function_entry spi_functions[];
+/* The PgError exception class (registered in plphp_init) */
+extern zend_class_entry *plphp_PgError_ce;
 
 /* SRF support: */
 extern FunctionCallInfo current_fcinfo;
@@ -58,6 +60,7 @@ ZEND_FUNCTION(spi_query_prepared);
 ZEND_FUNCTION(spi_query);
 ZEND_FUNCTION(spi_fetchrow);
 ZEND_FUNCTION(spi_cursor_close);
+ZEND_FUNCTION(spi_each);
 ZEND_FUNCTION(spi_freeplan);
 ZEND_FUNCTION(quote_literal);
 ZEND_FUNCTION(quote_nullable);
@@ -69,6 +72,7 @@ ZEND_FUNCTION(subtransaction);
 
 void php_SPIresult_destroy(zend_resource *rsrc);
 void php_SPIplan_destroy(zend_resource *rsrc);
+void plphp_throw_pg_error(ErrorData *edata);
 
 #endif /* PLPHP_SPI_H */
 

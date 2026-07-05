@@ -30,6 +30,9 @@ intentionally out of scope, with the rationale given.
 | `spi_query`                   | `spi_query` **added** | Opens a cursor; streams rows without materializing |
 | `spi_fetchrow`                | `spi_fetchrow` **added** | Fetch next row from a cursor; auto-closes at exhaustion |
 | `spi_cursor_close`            | `spi_cursor_close` **added** | Abandon a cursor early |
+| errors trappable with `eval`  | `try`/`catch (PgError $e)` **added** | PgError carries SQLSTATE, detail, and hint (richer than `$@`) |
+| SRF returns array reference   | return an array from the SRF **added** | One element per row, as an alternative to `return_next` |
+| —                             | `spi_each(query, callable)` **added** | Streaming per-row callback; PL/Perl has no equivalent |
 | `elog(level, msg)`            | `elog` **added** | DEBUG/LOG/INFO/NOTICE/WARNING/ERROR; `pg_raise` remains as the older spelling |
 | `spi_prepare`                 | `spi_prepare` **added** | Type names given as SQL type strings |
 | `spi_exec_prepared`           | `spi_exec_prepared` **added** | |
@@ -43,13 +46,25 @@ intentionally out of scope, with the rationale given.
 | `encode_bytea` / `decode_bytea` | — | Use PHP's `bin2hex` / `hex2bin`, `base64_encode`, etc. |
 | `encode_array_literal` / `encode_typed_literal` | — | Marginal; build literals with the quoting helpers |
 
+## Interpreter configuration
+
+| PL/Perl               | PL/php | Notes |
+|-----------------------|--------|-------|
+| `plperl.on_init`      | `plphp.on_init` **added** | PHP source run at interpreter initialization |
+| (start proc, PL/Tcl-style) | `plphp.start_proc` | Runs a named PL/php function once per session |
+| `plperl.use_strict`   | — | No PHP equivalent; PHP is always "strict" about undefined functions |
+
+## Transforms
+
+| PL/Perl               | PL/php | Notes |
+|-----------------------|--------|-------|
+| `jsonb_plperl`        | `jsonb_plphp` **added** | `TRANSFORM FOR TYPE jsonb`: native values in both directions |
+| `bool_plperl`         | — | PL/php already maps `t`/`f`; a transform would add little |
+
 ## Intentionally not implemented
 
 - **Trusted/sandboxed language.** PL/Perl's `plperl` uses `Safe.pm` to restrict
   operations. Modern PHP has no equivalent (`safe_mode` was removed in PHP 5.4),
   so PL/php is untrusted only.
-- **Interpreter-init hooks / GUCs** (`plperl.on_init`, `plperl.use_strict`,
-  etc.). No PL/php equivalent; PHP configuration is applied at interpreter
-  startup instead.
 
 See [`doc/plphp.md`](plphp.md) for full usage of the functions listed above.

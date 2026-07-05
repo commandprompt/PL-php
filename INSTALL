@@ -44,6 +44,12 @@ from PATH.  Override them if needed:
 This installs the shared library plphp.so plus the extension control and SQL
 files into the directories reported by pg_config.
 
+The optional jsonb transform (CREATE EXTENSION jsonb_plphp; see
+doc/plphp.md) builds the same way in its own directory:
+
+    make -C jsonb_plphp PG_CONFIG=... PHP_CONFIG=...
+    sudo make -C jsonb_plphp PG_CONFIG=... install
+
 
 3. Enable the language in a database
 ------------------------------------

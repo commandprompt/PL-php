@@ -47,6 +47,7 @@
 #include "fmgr.h"
 #include "funcapi.h"			/* needed for SRF support */
 #include "lib/stringinfo.h"
+#include "miscadmin.h"			/* work_mem, for the whole-array SRF form */
 #include "nodes/parsenodes.h"	/* InlineCodeBlock, for DO blocks */
 #if PG_VERSION_NUM >= 130000
 #include "tcop/cmdtag.h"		/* GetCommandTagName, for event triggers */
@@ -180,6 +181,8 @@ typedef struct plphp_proc_desc
 	FmgrInfo	arg_out_func[FUNC_MAX_ARGS];
 	Oid			arg_typioparam[FUNC_MAX_ARGS];
 	bool		arg_is_array[FUNC_MAX_ARGS];
+	Oid			arg_transform[FUNC_MAX_ARGS];	/* FromSQL transform fn, or 0 */
+	Oid			ret_transform;					/* ToSQL transform fn, or 0 */
 	char		arg_typtype[FUNC_MAX_ARGS];
 	char		arg_argmode[FUNC_MAX_ARGS];
 	TupleDesc	args_out_tupdesc;
@@ -201,6 +204,9 @@ static StringInfo currmsg = NULL;
  * errhint, etc as well.
  */
 static char *error_msg = NULL;
+
+/* GUC: PHP code to run once when the interpreter is initialized */
+static char *plphp_on_init = NULL;
 
 /* GUC: name of a function to run once when the interpreter is initialized */
 static char *plphp_start_proc = NULL;
@@ -371,6 +377,14 @@ static sapi_module_struct plphp_sapi_module = {
 void
 _PG_init(void)
 {
+	DefineCustomStringVariable("plphp.on_init",
+							   "PHP code to execute when the interpreter "
+							   "is first initialized in a session.",
+							   NULL,
+							   &plphp_on_init,
+							   NULL,
+							   PGC_SUSET, 0,
+							   NULL, NULL, NULL);
 	DefineCustomStringVariable("plphp.start_proc",
 							   "PL/php function to call when the interpreter "
 							   "is first initialized in a session.",
@@ -513,6 +527,27 @@ plphp_init(void)
 															  "plphp SPI plan",
 															  0);
 
+			/*
+			 * Register the PgError exception class: database errors are
+			 * thrown as PgError so user code can catch them.
+			 */
+			if (zend_eval_string(
+					"class PgError extends Exception {"
+					" public ?string $sqlstate = null;"
+					" public ?string $detail = null;"
+					" public ?string $hint = null;"
+					" public function getSQLState(): ?string { return $this->sqlstate; }"
+					" public function getDetail(): ?string { return $this->detail; }"
+					" public function getHint(): ?string { return $this->hint; }"
+					" }",
+					NULL, "plphp PgError class") == FAILURE)
+				elog(ERROR, "plphp: could not register the PgError class");
+			plphp_PgError_ce = zend_hash_str_find_ptr(CG(class_table),
+													  "pgerror",
+													  strlen("pgerror"));
+			if (plphp_PgError_ce == NULL)
+				elog(ERROR, "plphp: could not find the PgError class");
+
 			/* Ok, we're done */
 			plphp_first_call = false;
 		}
@@ -624,7 +659,8 @@ plphp_load_modules(void)
 /*
  * plphp_session_init
  * 		Run once per session on the first PL/php use (with SPI connected):
- * 		load modules from plphp_modules and invoke plphp.start_proc.
+ * 		execute plphp.on_init, load modules from plphp_modules, and invoke
+ * 		plphp.start_proc, in that order.
  */
 static void
 plphp_session_init(void)
@@ -632,6 +668,23 @@ plphp_session_init(void)
 	if (plphp_session_inited)
 		return;
 	plphp_session_inited = true;
+
+	if (plphp_on_init != NULL && plphp_on_init[0] != '\0')
+	{
+		char	   *exmsg;
+
+		if (zend_eval_string(plphp_on_init, NULL, "plphp.on_init") == FAILURE)
+		{
+			exmsg = plphp_pop_exception_message();
+			if (exmsg != NULL)
+				elog(ERROR, "plphp: on_init failed: %s", exmsg);
+			else
+				elog(ERROR, "plphp: on_init failed");
+		}
+		exmsg = plphp_pop_exception_message();
+		if (exmsg != NULL)
+			elog(ERROR, "plphp: on_init failed: %s", exmsg);
+	}
 
 	plphp_load_modules();
 
@@ -1315,6 +1368,25 @@ plphp_func_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 		ReleaseSysCache(retTypeTup);
 	}
 
+	if (phpret && OidIsValid(desc->ret_transform) &&
+		Z_TYPE_P(phpret) != IS_NULL)
+	{
+		/*
+		 * A TRANSFORM FOR TYPE applies to the return type: its ToSQL
+		 * function receives the zval (as "internal") and builds the Datum
+		 * directly, bypassing the text conversion below.
+		 */
+		retval = OidFunctionCall1(desc->ret_transform,
+								  PointerGetDatum(phpret));
+
+		zval_ptr_dtor(phpret);
+		efree(phpret);
+
+		REPORT_PHP_MEMUSAGE("finished calling user function");
+
+		return retval;
+	}
+
 	if (phpret)
 	{
 		switch (Z_TYPE_P(phpret))
@@ -1342,8 +1414,19 @@ plphp_func_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 					HeapTuple	tup;
 
 					if (desc->ret_type & PL_PSEUDO)
-						td = plphp_get_function_tupdesc(desc->ret_oid,
-														fcinfo->resultinfo);
+					{
+						/*
+						 * Try resolving from the call site first:
+						 * get_call_result_type derives a record's descriptor
+						 * from the function's OUT/INOUT parameters, which is
+						 * the only way under CALL (a procedure has no
+						 * ReturnSetInfo to consult).
+						 */
+						if (get_call_result_type(fcinfo, NULL, &td) !=
+							TYPEFUNC_COMPOSITE)
+							td = plphp_get_function_tupdesc(desc->ret_oid,
+															fcinfo->resultinfo);
+					}
 					else
 						td = lookup_rowtype_tupdesc(desc->ret_oid, (int32) -1);
 
@@ -1446,12 +1529,36 @@ plphp_srf_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 	current_attinmeta = TupleDescGetAttInMetadata(current_tupledesc);
 
 	/*
-	 * Call the PHP function.  The user code must call return_next, which will
-	 * create and populate the tuplestore appropiately.
+	 * Call the PHP function.  The user code normally calls return_next,
+	 * which creates and populates the tuplestore.
 	 */
 	phpret = plphp_call_php_func(desc, fcinfo);
 
-	/* We don't use the return value */
+	/*
+	 * Alternatively (or additionally), the function may return the whole
+	 * result set as an array with one element per row, like PL/Perl's
+	 * "return a reference to an array" form.  Note we are already in the
+	 * per-query memory context here.
+	 */
+	if (EG(exception) == NULL && Z_TYPE_P(phpret) == IS_ARRAY)
+	{
+		zval	   *row;
+
+		if (!current_tuplestore)
+			current_tuplestore = tuplestore_begin_heap(true, false, work_mem);
+
+		ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(phpret), row)
+		{
+			HeapTuple	tup;
+
+			tup = plphp_srf_htup_from_zval(row, current_attinmeta,
+										   current_memcxt);
+			tuplestore_puttuple(current_tuplestore, tup);
+			heap_freetuple(tup);
+		}
+		ZEND_HASH_FOREACH_END();
+	}
+
 	zval_ptr_dtor(phpret);
 	efree(phpret);
 
@@ -1724,13 +1831,38 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 			/* Allocate memory for argument names unless all of them are OUT*/
 			if (argnames && prodesc->n_total_args > 0)
 				aliases = palloc((NAMEDATALEN + 32) * prodesc->n_total_args);
-			
+
+			/*
+			 * TRANSFORM FOR TYPE support: fetch the function's declared
+			 * transform types so arguments/results of those types can be
+			 * converted by their transform functions (e.g. jsonb_plphp).
+			 */
+			{
+				Datum		protrftypes_datum;
+				bool		trfisnull;
+				List	   *trftypes = NIL;
+
+				protrftypes_datum = SysCacheGetAttr(PROCOID, procTup,
+													Anum_pg_proc_protrftypes,
+													&trfisnull);
+				if (!trfisnull)
+					trftypes = oid_array_to_list(protrftypes_datum);
+
+				prodesc->ret_transform =
+					get_transform_tosql(procStruct->prorettype,
+										procStruct->prolang, trftypes);
+				for (i = 0; i < prodesc->n_total_args; i++)
+					prodesc->arg_transform[i] =
+						get_transform_fromsql(argtypes[i],
+											  procStruct->prolang, trftypes);
+			}
+
 			/* Main argument processing loop. */
 			for (i = 0; i < prodesc->n_total_args; i++)
 			{
 				prodesc->arg_typtype[i] = get_typtype(argtypes[i]);
 				if (prodesc->arg_typtype[i] != TYPTYPE_COMPOSITE)
-				{							
+				{
 					get_type_io_data(argtypes[i],
 									 IOFunc_output,
 									 &typlen,
@@ -1761,9 +1893,17 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 					/* Initialiazation for OUT arguments aliases */
 					if (!out_return_str)
 					{
-						/* Generate return statment for a single OUT argument */
+						/*
+						 * Generate the return statement for a single OUT
+						 * argument.  Procedures are excluded: their result is
+						 * always a record (prorettype is RECORDOID even for a
+						 * single INOUT parameter), so they take the
+						 * array-of-references form below like multiple OUT
+						 * arguments do.
+						 */
 						out_return_str = palloc(NAMEDATALEN + 32);
-						if (prodesc->n_out_args + prodesc->n_mixed_args == 1)
+						if (prodesc->n_out_args + prodesc->n_mixed_args == 1 &&
+							procStruct->prorettype != RECORDOID)
 							snprintf(out_return_str, NAMEDATALEN + 32,
 									 "return $args[%d];", i);
 						else
@@ -1975,6 +2115,20 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 		{
 			if (PLPHP_ARG_ISNULL(fcinfo, j))
 				add_next_index_null(retval);
+			else if (OidIsValid(desc->arg_transform[i]))
+			{
+				/*
+				 * A TRANSFORM FOR TYPE applies: its FromSQL function returns
+				 * a freshly built zval (as "internal").
+				 */
+				zval	   *transformed;
+
+				transformed = (zval *)
+					DatumGetPointer(OidFunctionCall1(desc->arg_transform[i],
+													 PLPHP_ARG_VALUE(fcinfo, j)));
+				add_next_index_zval(retval, transformed);
+				efree(transformed);
+			}
 			else
 			{
 				char	   *tmp;
@@ -2029,7 +2183,27 @@ plphp_pop_exception_message(void)
 	zmsg = zend_read_property(ex->ce, ex, "message", sizeof("message") - 1,
 							  1, &rv);
 	if (zmsg != NULL && Z_TYPE_P(zmsg) == IS_STRING && Z_STRLEN_P(zmsg) > 0)
-		msg = pstrdup(Z_STRVAL_P(zmsg));
+	{
+		/*
+		 * For an uncaught PgError, report "<message> at line <N>" to match
+		 * the format database errors have always had in PL/php.
+		 */
+		if (plphp_PgError_ce != NULL &&
+			instanceof_function(ex->ce, plphp_PgError_ce))
+		{
+			zval	rvl;
+			zval   *zline = zend_read_property(ex->ce, ex, "line",
+											   sizeof("line") - 1, 1, &rvl);
+
+			if (zline != NULL && Z_TYPE_P(zline) == IS_LONG)
+				msg = psprintf("%s at line %ld", Z_STRVAL_P(zmsg),
+							   (long) Z_LVAL_P(zline));
+			else
+				msg = pstrdup(Z_STRVAL_P(zmsg));
+		}
+		else
+			msg = pstrdup(Z_STRVAL_P(zmsg));
+	}
 	else
 		msg = pstrdup("uncaught PHP exception");
 
@@ -2195,6 +2369,32 @@ plphp_error_cb(int type, zend_string *error_filename,
 	trace = strstr(str, "\nStack trace:");
 	if (trace != NULL)
 		str = pnstrdup(str, trace - str);
+
+	/*
+	 * An uncaught PgError is just a database (or pg_raise/elog) error that no
+	 * PHP code chose to catch: report its original message, not PHP's
+	 * "Uncaught PgError: <msg> in <file>:<line>" wrapper (the line number is
+	 * re-appended below).
+	 */
+	if (strncmp(str, "Uncaught PgError: ", 18) == 0)
+	{
+		const char *in = NULL;
+		const char *p = str += 18;
+
+		/* find the last " in <something>:<digits>" and cut it off */
+		while ((p = strstr(p, " in ")) != NULL)
+		{
+			in = p;
+			p += 4;
+		}
+		if (in != NULL)
+		{
+			const char *colon = strrchr(in, ':');
+
+			if (colon != NULL && isdigit((unsigned char) colon[1]))
+				str = pnstrdup(str, in - str);
+		}
+	}
 
 	/*
 	 * PHP error classification is a bitmask, so this conversion is a bit

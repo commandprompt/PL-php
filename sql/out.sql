@@ -57,3 +57,30 @@ $$ LANGUAGE plphp;
 
 SELECT * FROM plphp.out_invalid();
 
+
+-- INOUT parameters in procedures: a procedure's result is always a record
+-- (even with one INOUT), returned via the same assignment convention
+CREATE PROCEDURE proc_one(INOUT x int) LANGUAGE plphp AS $$
+    $x = $x + 1;
+$$;
+CALL proc_one(41);
+
+CREATE PROCEDURE proc_multi(INOUT x int, INOUT y text) LANGUAGE plphp AS $$
+    $x = $x * 2;
+    $y = strrev($y);
+$$;
+CALL proc_multi(21, 'ko');
+
+CREATE PROCEDURE proc_mixed(IN a int, INOUT total int) LANGUAGE plphp AS $$
+    $total = $a + $total;
+$$;
+CALL proc_mixed(40, 2);
+
+-- returning an explicit array works too
+CREATE PROCEDURE proc_ret(INOUT x int, INOUT y int) LANGUAGE plphp AS $$
+    return array($x + $y, $x - $y);
+$$;
+CALL proc_ret(10, 4);
+
+DROP PROCEDURE proc_one(int), proc_multi(int, text),
+               proc_mixed(int, int), proc_ret(int, int);

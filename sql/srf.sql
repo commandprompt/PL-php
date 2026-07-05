@@ -109,3 +109,34 @@ $$;
 create table duplicated as select * from duplicate('large_table', 'a');
 select min(duplicate) from duplicated;
 select count(*) from duplicated;
+
+-- Returning the whole result set as one array (one element per row),
+-- like PL/Perl's "return a reference to an array" form
+create function retwhole() returns setof int language plphp as $$
+	return array(10, 20, 30);
+$$;
+select * from retwhole();
+
+create type whole_row as (id int, name text);
+create function retwhole_rows(int) returns setof whole_row language plphp as $$
+	$rows = array();
+	for ($i = 1; $i <= $args[0]; $i++)
+		$rows[] = array('id' => $i, 'name' => "row $i");
+	return $rows;
+$$;
+select * from retwhole_rows(3);
+
+-- an empty array means an empty result set
+create function retwhole_empty() returns setof int language plphp as $$
+	return array();
+$$;
+select count(*) from retwhole_empty();
+
+-- return_next and a returned array can be combined; the array rows are
+-- appended after the return_next ones
+create function retwhole_mixed() returns setof int language plphp as $$
+	return_next(1);
+	return_next(2);
+	return array(3, 4);
+$$;
+select * from retwhole_mixed();
