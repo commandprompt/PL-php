@@ -52,8 +52,9 @@ SELECT hello('world');   -- Hello, world!
 | 🧰 **Utilities** | `quote_literal` / `quote_nullable` / `quote_ident`, `elog`, `$_SHARED`. |
 | 📦 **Session setup** | Anonymous `DO` blocks, `plphp_modules` autoloading, and a `plphp.start_proc` hook. |
 
-See the [**language reference**](doc/plphp.md) for the full API, and the
-[PL/Perl](doc/plperl-comparison.md) and [PL/Tcl](doc/pltcl-comparison.md)
+See the [**language reference**](doc/plphp.md) for the full API, the
+[**cookbook**](doc/cookbook.md) for practical, regression-tested recipes, and
+the [PL/Perl](doc/plperl-comparison.md) and [PL/Tcl](doc/pltcl-comparison.md)
 comparisons for feature-by-feature detail.
 
 ## Examples
@@ -131,6 +132,7 @@ roles you would trust with the server's OS account.
 ## Documentation
 
 - [Language reference](doc/plphp.md)
+- [Cookbook — tested recipes](doc/cookbook.md)
 - [Installation](INSTALL)
 - [Changelog](CHANGELOG.md)
 - [PL/php vs PL/Perl](doc/plperl-comparison.md)

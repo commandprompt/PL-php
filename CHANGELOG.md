@@ -7,6 +7,20 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **A tested cookbook** (`doc/cookbook.md`): practical recipes — `filter_var`
+  CHECK constraints, bcrypt passwords, HMAC tokens, recursive JSON reshaping,
+  regex set-returning functions, a generic JSON-diff audit trigger, batch
+  processing with periodic commits, streaming scans that stop early, CSV and
+  XML shredding, and zlib compression. Every recipe in the "Tested" section
+  runs in the new `cookbook` regression test.
+- New `coverage` regression test pinning previously-untested paths: DML and
+  utility statements through `spi_exec`, trigger arguments (`$_TD['args']`),
+  cursor behavior across `spi_commit` and rolled-back subtransactions,
+  `plphp.start_proc` failure handling, multibyte and TOAST-sized values, PHP
+  exception handling, and DO-block runtime errors.
+
 ### Fixed
 
 - **Array conversion rewritten in both directions**, fixing three
