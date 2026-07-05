@@ -226,6 +226,26 @@ plphp_srf_htup_from_zval(zval *val, AttInMetadata *attinmeta,
 }
 
 /*
+ * plphp_append_array_string
+ * 		Append one string element to an array literal under construction,
+ * 		double-quoted, with embedded quotes and backslashes escaped.
+ */
+static void
+plphp_append_array_string(StringInfo str, const char *s, size_t len)
+{
+	size_t		i;
+
+	appendStringInfoChar(str, '"');
+	for (i = 0; i < len; i++)
+	{
+		if (s[i] == '"' || s[i] == '\\')
+			appendStringInfoChar(str, '\\');
+		appendStringInfoChar(str, s[i]);
+	}
+	appendStringInfoChar(str, '"');
+}
+
+/*
  * plphp_convert_to_pg_array
  * 		Convert a zval into a Postgres text array representation.
  *
@@ -265,8 +285,12 @@ plphp_convert_to_pg_array(zval *array)
 				case IS_FALSE:
 					appendStringInfoString(&str, "\"false\"");
 					break;
+				case IS_NULL:
+					appendStringInfoString(&str, "NULL");
+					break;
 				case IS_STRING:
-					appendStringInfo(&str, "\"%s\"", Z_STRVAL_P(element));
+					plphp_append_array_string(&str, Z_STRVAL_P(element),
+											  Z_STRLEN_P(element));
 					break;
 				case IS_ARRAY:
 					tmp = plphp_convert_to_pg_array(element);
@@ -291,48 +315,120 @@ plphp_convert_to_pg_array(zval *array)
 }
 
 /*
+ * plphp_parse_array_body
+ * 		Parse the contents of an array literal, starting just past an opening
+ * 		brace, adding the elements to arr.  Returns the position just past the
+ * 		matching closing brace.
+ *
+ * The input always comes from an array type's output function, so the
+ * delimiter is assumed to be a comma (true for every built-in type except
+ * box) and the syntax is trusted to be well-formed.
+ *
+ * Quoted elements are always strings.  Unquoted elements are NULL, or are
+ * converted to PHP int/float when they look like numbers (preserving the
+ * semantics of the old zend_eval_string-based conversion), and are strings
+ * otherwise.
+ */
+static const char *
+plphp_parse_array_body(const char *p, zval *arr)
+{
+	StringInfoData buf;
+
+	initStringInfo(&buf);
+
+	for (;;)
+	{
+		if (*p == '\0')
+			elog(ERROR, "malformed array literal");
+		else if (*p == '}')		/* the array is empty */
+		{
+			p++;
+			break;
+		}
+		else if (*p == '{')		/* nested sub-array */
+		{
+			zval		sub;
+
+			array_init(&sub);
+			p = plphp_parse_array_body(p + 1, &sub);
+			add_next_index_zval(arr, &sub);
+		}
+		else if (*p == '"')		/* quoted element: always a string */
+		{
+			resetStringInfo(&buf);
+			for (p++; *p != '"'; p++)
+			{
+				if (*p == '\0')
+					elog(ERROR, "malformed array literal");
+				if (*p == '\\')
+					p++;
+				appendStringInfoChar(&buf, *p);
+			}
+			p++;				/* skip the closing quote */
+			add_next_index_stringl(arr, buf.data, buf.len);
+		}
+		else					/* unquoted element */
+		{
+			char	   *end;
+			long		lval;
+			double		dval;
+
+			resetStringInfo(&buf);
+			while (*p != ',' && *p != '}' && *p != '\0')
+				appendStringInfoChar(&buf, *p++);
+
+			errno = 0;
+			if (strcmp(buf.data, "NULL") == 0)
+				add_next_index_null(arr);
+			else if (buf.len > 0 &&
+					 (lval = strtol(buf.data, &end, 10), *end == '\0') &&
+					 errno != ERANGE)
+				add_next_index_long(arr, (zend_long) lval);
+			else if (buf.len > 0 &&
+					 (dval = strtod(buf.data, &end), *end == '\0'))
+				add_next_index_double(arr, dval);
+			else
+				add_next_index_stringl(arr, buf.data, buf.len);
+		}
+
+		/* between elements: expect a comma or the closing brace */
+		if (*p == ',')
+			p++;
+		else if (*p == '}')
+		{
+			p++;
+			break;
+		}
+		else
+			elog(ERROR, "malformed array literal");
+	}
+
+	pfree(buf.data);
+	return p;
+}
+
+/*
  * plphp_convert_from_pg_array
  * 		Convert a Postgres text array representation to a PHP array
  * 		(zval type thing).
  *
  * Returns a freshly emalloc'd zval; see the ownership note in plphp_io.h.
- *
- * FIXME -- does not work if there are embedded {'s in the input value.
- *
- * FIXME -- does not correctly quote/dequote the values
  */
 zval *
 plphp_convert_from_pg_array(char *input)
 {
 	zval	   *retval;
-	int			i;
-	StringInfoData str;
+	const char *p = input;
 
-	initStringInfo(&str);
+	/* skip any dimension decoration, e.g. "[0:2]={...}" */
+	while (*p != '\0' && *p != '{')
+		p++;
+	if (*p != '{')
+		elog(ERROR, "expected an array literal, got \"%s\"", input);
 
 	retval = (zval *) emalloc(sizeof(zval));
-	ZVAL_NULL(retval);
-
-	for (i = 0; input[i] != '\0'; i++)
-	{
-		if (input[i] == '{')
-			appendStringInfoString(&str, "array(");
-		else if (input[i] == '}')
-			appendStringInfoChar(&str, ')');
-		else
-			appendStringInfoChar(&str, input[i]);
-	}
-	appendStringInfoChar(&str, ';');
-
-	/*
-	 * zend_eval_string wraps the code in "return ... ;", so evaluating
-	 * "array(...);" yields the array value in retval.
-	 */
-	if (zend_eval_string(str.data, retval,
-						 "plphp array input parameter") == FAILURE)
-		elog(ERROR, "plphp: convert to internal representation failure");
-
-	pfree(str.data);
+	array_init(retval);
+	(void) plphp_parse_array_body(p + 1, retval);
 
 	return retval;
 }
