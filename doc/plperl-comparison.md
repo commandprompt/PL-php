@@ -46,13 +46,18 @@ intentionally out of scope, with the rationale given.
 | `encode_bytea` / `decode_bytea` | — | Use PHP's `bin2hex` / `hex2bin`, `base64_encode`, etc. |
 | `encode_array_literal` / `encode_typed_literal` | — | Marginal; build literals with the quoting helpers |
 
+## Interpreter configuration
+
+| PL/Perl               | PL/php | Notes |
+|-----------------------|--------|-------|
+| `plperl.on_init`      | `plphp.on_init` **added** | PHP source run at interpreter initialization |
+| (start proc, PL/Tcl-style) | `plphp.start_proc` | Runs a named PL/php function once per session |
+| `plperl.use_strict`   | — | No PHP equivalent; PHP is always "strict" about undefined functions |
+
 ## Intentionally not implemented
 
 - **Trusted/sandboxed language.** PL/Perl's `plperl` uses `Safe.pm` to restrict
   operations. Modern PHP has no equivalent (`safe_mode` was removed in PHP 5.4),
   so PL/php is untrusted only.
-- **Interpreter-init hooks / GUCs** (`plperl.on_init`, `plperl.use_strict`,
-  etc.). No PL/php equivalent; PHP configuration is applied at interpreter
-  startup instead.
 
 See [`doc/plphp.md`](plphp.md) for full usage of the functions listed above.

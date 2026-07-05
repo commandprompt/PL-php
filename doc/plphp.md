@@ -446,8 +446,17 @@ function to call once, when the interpreter is first initialized in a session:
 SET plphp.start_proc = 'my_setup';
 ```
 
-Both run inside the first PL/php call of the session, after the interpreter is
-ready.
+**on_init.** The `plphp.on_init` setting holds a snippet of *PHP source* to
+execute at initialization — the counterpart of `plperl.on_init`. Use it for
+setup that doesn't warrant a modules table, such as defining a helper or
+setting an include path:
+
+```sql
+SET plphp.on_init = 'function app_env() { return "production"; }';
+```
+
+All three run inside the first PL/php call of the session, in this order:
+`on_init`, then modules, then `start_proc`.
 
 ## Errors and exceptions
 

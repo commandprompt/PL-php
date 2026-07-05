@@ -24,6 +24,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - **`spi_each(query, callable)`** — invoke a callback once per row, streaming
   over a cursor; returning `false` stops early. The inline-loop equivalent of
   PL/Tcl's `spi_exec -array a $query { body }`.
+- **`plphp.on_init`** — a snippet of PHP source executed when the interpreter
+  is first initialized in a session, before modules and `plphp.start_proc`;
+  the counterpart of `plperl.on_init`.
 
 - **A tested cookbook** (`doc/cookbook.md`): practical recipes — `filter_var`
   CHECK constraints, bcrypt passwords, HMAC tokens, recursive JSON reshaping,

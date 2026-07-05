@@ -203,6 +203,9 @@ static StringInfo currmsg = NULL;
  */
 static char *error_msg = NULL;
 
+/* GUC: PHP code to run once when the interpreter is initialized */
+static char *plphp_on_init = NULL;
+
 /* GUC: name of a function to run once when the interpreter is initialized */
 static char *plphp_start_proc = NULL;
 
@@ -372,6 +375,14 @@ static sapi_module_struct plphp_sapi_module = {
 void
 _PG_init(void)
 {
+	DefineCustomStringVariable("plphp.on_init",
+							   "PHP code to execute when the interpreter "
+							   "is first initialized in a session.",
+							   NULL,
+							   &plphp_on_init,
+							   NULL,
+							   PGC_SUSET, 0,
+							   NULL, NULL, NULL);
 	DefineCustomStringVariable("plphp.start_proc",
 							   "PL/php function to call when the interpreter "
 							   "is first initialized in a session.",
@@ -646,7 +657,8 @@ plphp_load_modules(void)
 /*
  * plphp_session_init
  * 		Run once per session on the first PL/php use (with SPI connected):
- * 		load modules from plphp_modules and invoke plphp.start_proc.
+ * 		execute plphp.on_init, load modules from plphp_modules, and invoke
+ * 		plphp.start_proc, in that order.
  */
 static void
 plphp_session_init(void)
@@ -654,6 +666,23 @@ plphp_session_init(void)
 	if (plphp_session_inited)
 		return;
 	plphp_session_inited = true;
+
+	if (plphp_on_init != NULL && plphp_on_init[0] != '\0')
+	{
+		char	   *exmsg;
+
+		if (zend_eval_string(plphp_on_init, NULL, "plphp.on_init") == FAILURE)
+		{
+			exmsg = plphp_pop_exception_message();
+			if (exmsg != NULL)
+				elog(ERROR, "plphp: on_init failed: %s", exmsg);
+			else
+				elog(ERROR, "plphp: on_init failed");
+		}
+		exmsg = plphp_pop_exception_message();
+		if (exmsg != NULL)
+			elog(ERROR, "plphp: on_init failed: %s", exmsg);
+	}
 
 	plphp_load_modules();
 
