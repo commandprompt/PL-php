@@ -16,7 +16,7 @@ MODULE_big = plphp
 OBJS = plphp.o plphp_io.o plphp_spi.o
 
 EXTENSION = plphp
-DATA = plphp--2.0.sql
+DATA = plphp--2.1.sql plphp--2.0--2.1.sql
 
 # PHP embed SAPI compile/link flags, discovered via php-config.
 PHP_CONFIG ?= php-config
@@ -32,7 +32,7 @@ PG_CPPFLAGS = $(PHP_INCLUDES)
 SHLIB_LINK = -L$(PHP_LIBDIR) -l$(PHP_LIBNAME) $(shell $(PHP_CONFIG) --ldflags)
 
 # Regression tests.  "init" installs the extension; keep it first.
-REGRESS = init base shared trigger spi raise cargs pseudo srf out varnames validator compat txn evttrig subxact modules
+REGRESS = init base shared trigger spi raise cargs pseudo srf out varnames validator compat txn evttrig subxact modules cursor
 
 PG_CONFIG ?= pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)

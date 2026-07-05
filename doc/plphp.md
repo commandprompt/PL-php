@@ -237,6 +237,36 @@ CREATE FUNCTION sum_series(n integer) RETURNS integer LANGUAGE plphp AS $$
 $$;
 ```
 
+### Streaming large result sets (cursors)
+
+`spi_exec` materializes the whole result set in memory before you see the
+first row. For result sets too large for that, open a cursor instead and
+fetch rows one at a time:
+
+- `spi_query(query)` — open a cursor for `query` and return its name (a
+  string).
+- `spi_fetchrow(cursor)` — return the next row as an associative array, or
+  `false` when the cursor is exhausted (the cursor is then closed
+  automatically).
+- `spi_cursor_close(cursor)` — close a cursor early, before exhausting it.
+  Closing an unknown or already-closed cursor is harmless.
+
+Cursors not fetched to completion or closed explicitly are destroyed at the
+end of the transaction.
+
+```sql
+CREATE FUNCTION first_negative() RETURNS integer LANGUAGE plphp AS $$
+    $cur = spi_query("select v from readings order by taken_at");
+    while ($row = spi_fetchrow($cur)) {
+        if ($row['v'] < 0) {
+            spi_cursor_close($cur);   -- stop early; skip the rest
+            return $row['v'];
+        }
+    }
+    return null;
+$$;
+```
+
 ## Prepared statements
 
 For queries you run repeatedly, prepare a plan once and execute it with
@@ -247,7 +277,10 @@ each `$1`, `$2`, ... placeholder and returns a plan resource:
 - `spi_exec_prepared(plan, arg1, arg2, ...)` — execute the plan; returns a
   result resource just like `spi_exec` (use `spi_fetch_row`, `spi_processed`,
   etc.).
-- `spi_query_prepared(plan, ...)` — an alias of `spi_exec_prepared`.
+- `spi_query_prepared(plan, arg1, arg2, ...)` — open a *cursor* for the plan
+  and return its name; fetch rows with `spi_fetchrow` (see
+  [Streaming large result sets](#streaming-large-result-sets-cursors)).
+  Before PL/php 2.1 this was an alias of `spi_exec_prepared`.
 - `spi_freeplan(plan)` — release the plan when you are done with it.
 
 ```sql

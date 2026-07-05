@@ -25,12 +25,15 @@ intentionally out of scope, with the rationale given.
 | PL/Perl                       | PL/php | Notes |
 |-------------------------------|--------|-------|
 | `spi_exec_query`              | `spi_exec` | Runs a query, returns a result to iterate |
-| `spi_fetchrow` / row access   | `spi_fetch_row` | |
+| `spi_fetchrow` / row access   | `spi_fetch_row` | Iterates a materialized `spi_exec` result |
 | (row count / status)          | `spi_processed`, `spi_status`, `spi_rewind` | |
+| `spi_query`                   | `spi_query` **added** | Opens a cursor; streams rows without materializing |
+| `spi_fetchrow`                | `spi_fetchrow` **added** | Fetch next row from a cursor; auto-closes at exhaustion |
+| `spi_cursor_close`            | `spi_cursor_close` **added** | Abandon a cursor early |
 | `elog(level, msg)`            | `elog` **added** | DEBUG/LOG/INFO/NOTICE/WARNING/ERROR; `pg_raise` remains as the older spelling |
 | `spi_prepare`                 | `spi_prepare` **added** | Type names given as SQL type strings |
 | `spi_exec_prepared`           | `spi_exec_prepared` **added** | |
-| `spi_query_prepared`          | `spi_query_prepared` **added** | Alias of `spi_exec_prepared` (PL/php materializes results) |
+| `spi_query_prepared`          | `spi_query_prepared` **added** | Opens a cursor for a prepared plan (was an alias of `spi_exec_prepared` in 2.0) |
 | `spi_freeplan`                | `spi_freeplan` **added** | |
 | `quote_literal`               | `quote_literal` **added** | |
 | `quote_nullable`              | `quote_nullable` **added** | |
@@ -45,10 +48,6 @@ intentionally out of scope, with the rationale given.
 - **Trusted/sandboxed language.** PL/Perl's `plperl` uses `Safe.pm` to restrict
   operations. Modern PHP has no equivalent (`safe_mode` was removed in PHP 5.4),
   so PL/php is untrusted only.
-- **Cursor-streaming SPI (`spi_query` + `spi_fetchrow` over a portal).** PL/php's
-  `spi_exec` materializes results and `spi_fetch_row` iterates them, covering the
-  same use cases; true streaming of very large result sets without materializing
-  is not provided.
 - **Interpreter-init hooks / GUCs** (`plperl.on_init`, `plperl.use_strict`,
   etc.). No PL/php equivalent; PHP configuration is applied at interpreter
   startup instead.

@@ -5,6 +5,25 @@ All notable changes to PL/php are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] — 2026-07-05
+
+### Added
+
+- **Cursor-streaming SPI** — `spi_query(query)` opens a cursor and returns its
+  name, `spi_fetchrow(cursor)` fetches one row at a time (returning `false`
+  and closing the cursor at exhaustion), and `spi_cursor_close(cursor)`
+  abandons a cursor early. Large result sets can now be scanned in constant
+  memory instead of being materialized by `spi_exec`. Matches PL/Perl's
+  `spi_query`/`spi_fetchrow`/`spi_cursor_close`.
+
+### Changed
+
+- **Breaking:** `spi_query_prepared(plan, args...)` now opens a cursor and
+  returns its name for use with `spi_fetchrow`, matching PL/Perl semantics.
+  In 2.0 it was an alias of `spi_exec_prepared` (returning a materialized
+  result resource); code that relied on the alias should call
+  `spi_exec_prepared` instead.
+
 ## [2.0.0] — 2026-07-01
 
 A ground-up modernization of PL/php (the previous release, 1.4, dates from 2010)

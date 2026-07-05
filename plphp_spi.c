@@ -110,6 +110,14 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_spi_freeplan, 0, 0, 1)
 	ZEND_ARG_INFO(0, plan)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_spi_query, 0, 0, 1)
+	ZEND_ARG_INFO(0, query)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_spi_cursor, 0, 0, 1)
+	ZEND_ARG_INFO(0, cursor)
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_quote, 0, 0, 1)
 	ZEND_ARG_INFO(0, string)
 ZEND_END_ARG_INFO()
@@ -140,6 +148,9 @@ zend_function_entry spi_functions[] =
 	ZEND_FE(spi_prepare, arginfo_spi_prepare)
 	ZEND_FE(spi_exec_prepared, arginfo_spi_exec_prepared)
 	ZEND_FE(spi_query_prepared, arginfo_spi_exec_prepared)
+	ZEND_FE(spi_query, arginfo_spi_query)
+	ZEND_FE(spi_fetchrow, arginfo_spi_cursor)
+	ZEND_FE(spi_cursor_close, arginfo_spi_cursor)
 	ZEND_FE(spi_freeplan, arginfo_spi_freeplan)
 	ZEND_FE(quote_literal, arginfo_quote)
 	ZEND_FE(quote_nullable, arginfo_quote)
@@ -585,7 +596,8 @@ php_SPIplan_destroy(zend_resource *rsrc)
  * 		Prepare a query plan.  The first argument is the query text; any
  * 		further arguments are the SQL type names of the query's $1, $2, ...
  * 		placeholders.  Returns a plan resource for use with
- * 		spi_exec_prepared(); free it with spi_freeplan().
+ * 		spi_exec_prepared() or spi_query_prepared(); free it with
+ * 		spi_freeplan().
  */
 ZEND_FUNCTION(spi_prepare)
 {
@@ -782,13 +794,286 @@ ZEND_FUNCTION(spi_exec_prepared)
 }
 
 /*
+ * spi_query
+ * 		Open a cursor for a query and return its portal name.
+ *
+ * Unlike spi_exec, this does not materialize the result set: rows are
+ * fetched one at a time with spi_fetchrow(), so arbitrarily large results
+ * can be scanned in constant memory.  The cursor is closed automatically
+ * when spi_fetchrow() reaches the end, or early with spi_cursor_close();
+ * any cursor still open is destroyed at transaction end.
+ */
+ZEND_FUNCTION(spi_query)
+{
+	char	   *query;
+	size_t		query_len;
+	Portal		portal;
+	MemoryContext oldcontext = CurrentMemoryContext;
+	ResourceOwner oldowner = CurrentResourceOwner;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "s",
+							  &query, &query_len) == FAILURE)
+	{
+		zend_error(E_WARNING, "cannot parse parameters in %s",
+				   get_active_function_name());
+		RETURN_FALSE;
+	}
+
+	BeginInternalSubTransaction(NULL);
+	MemoryContextSwitchTo(oldcontext);
+
+	PG_TRY();
+	{
+		SPIPlanPtr	plan;
+
+		plan = SPI_prepare(query, 0, NULL);
+		if (plan == NULL)
+			elog(ERROR, "spi_query: SPI_prepare failed: %s",
+				 SPI_result_code_string(SPI_result));
+
+		/* the portal keeps its own copy of the plan */
+		portal = SPI_cursor_open(NULL, plan, NULL, NULL, false);
+		if (portal == NULL)
+			elog(ERROR, "spi_query: SPI_cursor_open failed");
+		SPI_freeplan(plan);
+
+		ReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		MemoryContextSwitchTo(oldcontext);
+		edata = CopyErrorData();
+		FlushErrorState();
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+		zend_error(E_ERROR, "%s", edata->message);
+		return;
+	}
+	PG_END_TRY();
+
+	RETURN_STRING(portal->name);
+}
+
+/*
  * spi_query_prepared
- * 		Alias of spi_exec_prepared (PL/php materializes results, so the
- * 		distinction PL/Perl draws between the two does not apply).
+ * 		Open a cursor for a plan prepared with spi_prepare(), passing one
+ * 		argument per placeholder, and return its portal name for use with
+ * 		spi_fetchrow().  The streaming counterpart of spi_exec_prepared().
  */
 ZEND_FUNCTION(spi_query_prepared)
 {
-	zif_spi_exec_prepared(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+	zval	   *z_plan;
+	zval	   *zargs = NULL;
+	int			nargs = 0;
+	php_SPIplan *plan;
+	Portal		portal;
+	Datum	   *values = NULL;
+	char	   *nulls = NULL;
+	int			i;
+	MemoryContext oldcontext = CurrentMemoryContext;
+	ResourceOwner oldowner = CurrentResourceOwner;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "r*", &z_plan,
+							  &zargs, &nargs) == FAILURE)
+	{
+		zend_error(E_WARNING, "cannot parse parameters in %s",
+				   get_active_function_name());
+		RETURN_FALSE;
+	}
+
+	plan = (php_SPIplan *) zend_fetch_resource(Z_RES_P(z_plan),
+											   "plphp SPI plan", SPIplan_rtype);
+	if (plan == NULL)
+		RETURN_FALSE;
+
+	if (nargs != plan->nargs)
+	{
+		zend_error(E_WARNING,
+				   "spi_query_prepared: plan expects %d argument(s), got %d",
+				   plan->nargs, nargs);
+		RETURN_FALSE;
+	}
+
+	if (plan->nargs > 0)
+	{
+		values = (Datum *) palloc(plan->nargs * sizeof(Datum));
+		nulls = (char *) palloc(plan->nargs * sizeof(char));
+	}
+
+	BeginInternalSubTransaction(NULL);
+	MemoryContextSwitchTo(oldcontext);
+
+	PG_TRY();
+	{
+		for (i = 0; i < plan->nargs; i++)
+		{
+			char   *val = plphp_zval_get_cstring(&zargs[i], true, true);
+
+			if (val == NULL)
+			{
+				nulls[i] = 'n';
+				values[i] = (Datum) 0;
+			}
+			else
+			{
+				nulls[i] = ' ';
+				values[i] = OidInputFunctionCall(plan->typinput[i], val,
+												 plan->typioparam[i], -1);
+				pfree(val);
+			}
+		}
+
+		portal = SPI_cursor_open(NULL, plan->plan, values, nulls, false);
+		if (portal == NULL)
+			elog(ERROR, "spi_query_prepared: SPI_cursor_open failed");
+
+		ReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		MemoryContextSwitchTo(oldcontext);
+		edata = CopyErrorData();
+		FlushErrorState();
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+		zend_error(E_ERROR, "%s", edata->message);
+		return;
+	}
+	PG_END_TRY();
+
+	RETURN_STRING(portal->name);
+}
+
+/*
+ * spi_fetchrow
+ * 		Fetch the next row from a cursor opened with spi_query() or
+ * 		spi_query_prepared(), as an associative array keyed by column name.
+ *
+ * Returns false when the cursor is exhausted (closing it automatically,
+ * like PL/Perl) or when no cursor by that name exists.
+ */
+ZEND_FUNCTION(spi_fetchrow)
+{
+	char	   *cursor;
+	size_t		cursor_len;
+	zval	   *row = NULL;
+	MemoryContext oldcontext = CurrentMemoryContext;
+	ResourceOwner oldowner = CurrentResourceOwner;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "s",
+							  &cursor, &cursor_len) == FAILURE)
+	{
+		zend_error(E_WARNING, "cannot parse parameters in %s",
+				   get_active_function_name());
+		RETURN_FALSE;
+	}
+
+	BeginInternalSubTransaction(NULL);
+	MemoryContextSwitchTo(oldcontext);
+
+	PG_TRY();
+	{
+		Portal		portal = SPI_cursor_find(cursor);
+
+		if (portal != NULL)
+		{
+			SPI_cursor_fetch(portal, true, 1);
+			if (SPI_processed == 0)
+				SPI_cursor_close(portal);
+			else
+				row = plphp_zval_from_tuple(SPI_tuptable->vals[0],
+											SPI_tuptable->tupdesc);
+			SPI_freetuptable(SPI_tuptable);
+		}
+
+		ReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		MemoryContextSwitchTo(oldcontext);
+		edata = CopyErrorData();
+		FlushErrorState();
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+		zend_error(E_ERROR, "%s", edata->message);
+		return;
+	}
+	PG_END_TRY();
+
+	if (row == NULL)
+		RETURN_FALSE;
+
+	/* Move the freshly built array into return_value and free the shell */
+	ZVAL_COPY_VALUE(return_value, row);
+	efree(row);
+}
+
+/*
+ * spi_cursor_close
+ * 		Close a cursor opened with spi_query() or spi_query_prepared()
+ * 		before it is exhausted.  Closing an unknown or already-closed
+ * 		cursor is silently ignored, as in PL/Perl.
+ */
+ZEND_FUNCTION(spi_cursor_close)
+{
+	char	   *cursor;
+	size_t		cursor_len;
+	MemoryContext oldcontext = CurrentMemoryContext;
+	ResourceOwner oldowner = CurrentResourceOwner;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "s",
+							  &cursor, &cursor_len) == FAILURE)
+	{
+		zend_error(E_WARNING, "cannot parse parameters in %s",
+				   get_active_function_name());
+		RETURN_FALSE;
+	}
+
+	BeginInternalSubTransaction(NULL);
+	MemoryContextSwitchTo(oldcontext);
+
+	PG_TRY();
+	{
+		Portal		portal = SPI_cursor_find(cursor);
+
+		if (portal != NULL)
+			SPI_cursor_close(portal);
+
+		ReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		MemoryContextSwitchTo(oldcontext);
+		edata = CopyErrorData();
+		FlushErrorState();
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(oldcontext);
+		CurrentResourceOwner = oldowner;
+		zend_error(E_ERROR, "%s", edata->message);
+		return;
+	}
+	PG_END_TRY();
+
+	RETURN_TRUE;
 }
 
 /*
