@@ -168,6 +168,18 @@ SELECT * FROM add_sub(10, 4);   -- sum=14, diff=6
 
 Named arguments must be valid PHP identifiers.
 
+The same convention works for **INOUT parameters in procedures** — assign to
+the variable; `CALL` reports the resulting values (always as a row, even for
+a single INOUT parameter):
+
+```sql
+CREATE PROCEDURE bump(INOUT counter integer) LANGUAGE plphp AS $$
+    $counter = $counter + 1;
+$$;
+
+CALL bump(41);   -- counter=42
+```
+
 ## Set-returning functions
 
 Declare the function `RETURNS SETOF ...` (or `RETURNS TABLE(...)`) and call

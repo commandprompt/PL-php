@@ -47,6 +47,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **INOUT parameters in procedures work.** `CALL` on a PL/php procedure with
+  INOUT parameters used to fail ("function returning record called in
+  context that cannot accept type record"): a procedure's result is always a
+  record — even with a single INOUT parameter — which broke both the
+  single-OUT scalar-return shortcut and the record descriptor lookup (which
+  needed a `ReturnSetInfo` that `CALL` never supplies; it is now derived
+  from the parameter declarations via `get_call_result_type`). The usual
+  assignment convention now works: `$param = ...;`.
 - **Array conversion rewritten in both directions**, fixing three
   long-standing FIXMEs:
   - Returning a PHP array containing `null` now produces a SQL `NULL` element

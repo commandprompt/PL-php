@@ -1414,8 +1414,19 @@ plphp_func_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 					HeapTuple	tup;
 
 					if (desc->ret_type & PL_PSEUDO)
-						td = plphp_get_function_tupdesc(desc->ret_oid,
-														fcinfo->resultinfo);
+					{
+						/*
+						 * Try resolving from the call site first:
+						 * get_call_result_type derives a record's descriptor
+						 * from the function's OUT/INOUT parameters, which is
+						 * the only way under CALL (a procedure has no
+						 * ReturnSetInfo to consult).
+						 */
+						if (get_call_result_type(fcinfo, NULL, &td) !=
+							TYPEFUNC_COMPOSITE)
+							td = plphp_get_function_tupdesc(desc->ret_oid,
+															fcinfo->resultinfo);
+					}
 					else
 						td = lookup_rowtype_tupdesc(desc->ret_oid, (int32) -1);
 
@@ -1882,9 +1893,17 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 					/* Initialiazation for OUT arguments aliases */
 					if (!out_return_str)
 					{
-						/* Generate return statment for a single OUT argument */
+						/*
+						 * Generate the return statement for a single OUT
+						 * argument.  Procedures are excluded: their result is
+						 * always a record (prorettype is RECORDOID even for a
+						 * single INOUT parameter), so they take the
+						 * array-of-references form below like multiple OUT
+						 * arguments do.
+						 */
 						out_return_str = palloc(NAMEDATALEN + 32);
-						if (prodesc->n_out_args + prodesc->n_mixed_args == 1)
+						if (prodesc->n_out_args + prodesc->n_mixed_args == 1 &&
+							procStruct->prorettype != RECORDOID)
 							snprintf(out_return_str, NAMEDATALEN + 32,
 									 "return $args[%d];", i);
 						else
