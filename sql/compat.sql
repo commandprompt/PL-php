@@ -50,11 +50,11 @@ CREATE FUNCTION prep_concat(text, text) RETURNS text LANGUAGE plphp AS $$
 $$;
 SELECT prep_concat('foo', 'bar');
 
--- spi_query_prepared is an alias of spi_exec_prepared
+-- spi_query_prepared opens a cursor, consumed with spi_fetchrow
 CREATE FUNCTION prep_alias(int) RETURNS int LANGUAGE plphp AS $$
     $plan = spi_prepare('select $1 + 1 as v', 'int4');
-    $r = spi_query_prepared($plan, $args[0]);
-    $row = spi_fetch_row($r);
+    $cur = spi_query_prepared($plan, $args[0]);
+    $row = spi_fetchrow($cur);
     spi_freeplan($plan);
     return $row['v'];
 $$;

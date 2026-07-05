@@ -26,6 +26,7 @@ its rationale.
 | `spi_exec ?-count n? cmd`     | `spi_exec(cmd [, limit])` | |
 | `spi_prepare` / `spi_execp`   | `spi_prepare` / `spi_exec_prepared` | |
 | row iteration (`-array`/loop) | `spi_fetch_row` loop | Same capability; PL/php has no inline loop-body sugar |
+| streaming row-by-row (portal) | `spi_query` / `spi_fetchrow` / `spi_cursor_close` **added** | Constant-memory iteration over large result sets |
 | `quote`                       | `quote_literal` (+ `quote_nullable`, `quote_ident`) | |
 | `elog level msg`              | `elog(level, msg)` | DEBUG/LOG/INFO/NOTICE/WARNING/ERROR |
 | `subtransaction { body }`     | `subtransaction(callable, …)` **added** | |
