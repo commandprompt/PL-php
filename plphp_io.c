@@ -23,6 +23,26 @@
 #include "utils/memutils.h"
 
 /*
+ * plphp_add_row_value
+ * 		Add one column's text value to a row hash under attname, converting
+ * 		array-typed columns to PHP arrays (like the argument conversion
+ * 		does) rather than leaving them as literal "{...}" strings.
+ */
+static void
+plphp_add_row_value(zval *row, char *attname, Oid atttypid, char *value)
+{
+	if (OidIsValid(get_element_type(atttypid)))
+	{
+		zval	   *arr = plphp_convert_from_pg_array(value);
+
+		add_assoc_zval(row, attname, arr);
+		efree(arr);
+	}
+	else
+		add_assoc_string(row, attname, value);
+}
+
+/*
  * plphp_zval_from_tuple
  *		 Build a PHP hash from a tuple.
  *
@@ -46,8 +66,7 @@ plphp_zval_from_tuple(HeapTuple tuple, TupleDesc tupdesc)
 		/* get its value */
 		if ((attdata = SPI_getvalue(tuple, tupdesc, i + 1)) != NULL)
 		{
-			/* add_assoc_string copies the string in PHP 7+ */
-			add_assoc_string(array, attname, attdata);
+			plphp_add_row_value(array, attname, att->atttypid, attdata);
 			pfree(attdata);
 		}
 		else
@@ -573,7 +592,7 @@ plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc)
 
 		/* Append the attribute name and the value to the list. */
 		outputstr = OidOutputFunctionCall(typoutput, attr_datum);
-		add_assoc_string(output, attname, outputstr);
+		plphp_add_row_value(output, attname, att->atttypid, outputstr);
 		pfree(outputstr);
 	}
 

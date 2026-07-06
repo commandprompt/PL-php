@@ -9,10 +9,32 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Continuous integration** — a GitHub Actions matrix building and running
+  the full regression suite (core + `jsonb_plphp`) on PostgreSQL 11-18 and
+  PHP 8.1/8.2/8.3/8.4 for every pull request.
 - **VARIADIC parameters.** A variadic function's collected arguments arrive
   as a single PHP array, matching every other PL (`VARIADIC "any"` remains
   unsupported and is rejected with a clear error). Previously any VARIADIC
   declaration failed.
+
+### Changed
+
+- **Array columns inside rows are PHP arrays now.** An array-typed column in
+  `$_TD['new']`/`['old']`, in rows from `spi_fetch_row`/`spi_fetchrow`, or in
+  a composite argument's fields used to arrive as its literal text form
+  (`{a,b}`); it now converts to a PHP array, and converts back when assigned
+  (e.g. trigger `MODIFY`). Code that string-parsed those values should use
+  the array directly.
+
+### Fixed
+
+- **PHP 8.1, 8.2, and 8.4 compatibility.** PL/php now builds and passes the
+  full suite on PHP 8.1 through 8.4: a version guard for the
+  `php_module_startup` signature change (8.2), explicit `fgetcsv` arguments
+  in the cookbook (8.4 deprecation), and a clear compile error below 8.1.
+  The Makefiles now prefer the `libphp` matching `PHP_CONFIG`'s version when
+  several are installed (see INSTALL for a packaging caveat about shared
+  SONAMEs).
 
 ## [2.2.0] — 2026-07-05
 

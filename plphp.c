@@ -76,6 +76,10 @@
 /* PHP stuff */
 #include "php.h"
 
+#if PHP_VERSION_ID < 80100
+#error "PL/php requires PHP 8.1 or newer (zend_error_cb signature)"
+#endif
+
 #include "php_variables.h"
 #include "php_globals.h"
 #include "zend_hash.h"
@@ -413,9 +417,11 @@ plphp_init_all(void)
 		plphp_init();
 
 	/*
-	 * Any other initialization that must be done each time a new
-	 * backend starts -- currently none.
+	 * Loaded PHP extensions can swap zend_error_cb behind our back at any
+	 * point; put ours back before running anything.  It is a plain pointer
+	 * assignment, so doing it on every call is free.
 	 */
+	zend_error_cb = plphp_error_cb;
 }
 
 /*
@@ -450,8 +456,14 @@ plphp_init(void)
 			plphp_sapi_module.phpinfo_as_text = 1;
 			sapi_startup(&plphp_sapi_module);
 
+#if PHP_VERSION_ID >= 80200
 			if (php_module_startup(&plphp_sapi_module, NULL) == FAILURE)
 				elog(ERROR, "php_module_startup call failed");
+#else
+			/* PHP 8.1 still took an additional-modules count */
+			if (php_module_startup(&plphp_sapi_module, NULL, 0) == FAILURE)
+				elog(ERROR, "php_module_startup call failed");
+#endif
 
 			/* php_module_startup changed it, so put it back */
 			zend_error_cb = plphp_error_cb;
@@ -475,6 +487,22 @@ plphp_init(void)
 			INI_HARDCODED("implicit_flush", "1");
 			INI_HARDCODED("max_execution_time", "0");
 			INI_HARDCODED("max_input_time", "-1");
+
+			/*
+			 * The host's php.ini must not decide which errors reach our
+			 * zend_error_cb, or how they are routed: force full reporting
+			 * and disable opcache/JIT, which add nothing for our one-shot
+			 * eval'd functions and can interfere with error delivery.
+			 * (GitHub's runner images, for example, ship a PHP configured
+			 * with opcache+JIT enabled for CLI, which broke both notices
+			 * and error messages.)
+			 */
+			INI_HARDCODED("error_reporting", "32767");	/* E_ALL */
+			INI_HARDCODED("display_errors", "0");
+			INI_HARDCODED("log_errors", "0");
+			INI_HARDCODED("opcache.enable", "0");
+			INI_HARDCODED("opcache.enable_cli", "0");
+			INI_HARDCODED("xdebug.mode", "off");
 
 			/*
 			 * Set memory limit to ridiculously high value.  This helps the
@@ -503,6 +531,13 @@ plphp_init(void)
 			}
 
 			PG(during_request_startup) = true;
+
+			/*
+			 * Extensions loaded from the host's php.ini (xdebug, for one)
+			 * may have hooked zend_error_cb during module or request
+			 * startup; ours must be the one in place.
+			 */
+			zend_error_cb = plphp_error_cb;
 
 			/*
 			 * Register our SPI functions and the procedure cache now that the

@@ -41,6 +41,12 @@ from PATH.  Override them if needed:
     make PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config PHP_CONFIG=/usr/bin/php-config
     sudo make PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config install
 
+Note: if several libphpX.Y-embed versions are installed side by side, some
+packagings (e.g. deb.sury.org) give them all the same SONAME (libphp.so), so
+the backend loads whatever /usr/lib/libphp.so points at -- regardless of the
+version linked at build time.  Keep a single embed package installed, or
+point that symlink at the intended version.
+
 This installs the shared library plphp.so plus the extension control and SQL
 files into the directories reported by pg_config.
 

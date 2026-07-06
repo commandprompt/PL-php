@@ -22,7 +22,13 @@ DATA = plphp--2.2.sql plphp--2.0--2.1.sql plphp--2.1--2.2.sql
 PHP_CONFIG ?= php-config
 PHP_INCLUDES := $(shell $(PHP_CONFIG) --includes)
 PHP_LIBDIR := $(shell $(PHP_CONFIG) --prefix)/lib
-PHP_LIBNAME := $(patsubst lib%.so,%,$(notdir $(firstword $(wildcard $(PHP_LIBDIR)/libphp*.so /usr/lib/libphp*.so /usr/lib/*/libphp*.so))))
+# Prefer the library matching PHP_CONFIG's version (e.g. libphp8.3.so); with
+# several PHP versions installed, a bare "libphp*.so" glob would pick the
+# unversioned symlink of whichever version owns it.
+PHP_VERSION := $(shell $(PHP_CONFIG) --version | cut -d. -f1-2)
+PHP_LIBNAME := $(patsubst lib%.so,%,$(notdir $(firstword $(wildcard \
+	$(PHP_LIBDIR)/libphp$(PHP_VERSION).so /usr/lib/libphp$(PHP_VERSION).so /usr/lib/*/libphp$(PHP_VERSION).so \
+	$(PHP_LIBDIR)/libphp*.so /usr/lib/libphp*.so /usr/lib/*/libphp*.so))))
 
 PG_CPPFLAGS = $(PHP_INCLUDES)
 # Link against the PHP embed library only; its own transitive dependencies

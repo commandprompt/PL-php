@@ -4,8 +4,8 @@ PL/php lets you write PostgreSQL functions and triggers in PHP. This document
 describes the programming interface. For build and install instructions see
 [`INSTALL`](../INSTALL); for a feature summary see [`README`](../README.md).
 
-Tested on **PostgreSQL 11 through 18** with **PHP 8.3** (embed SAPI,
-non-thread-safe).
+Tested on **PostgreSQL 11 through 18** with **PHP 8.1 through 8.4** (embed
+SAPI, non-thread-safe).
 
 - [Enabling the language](#enabling-the-language)
 - [Writing functions](#writing-functions)
@@ -87,6 +87,11 @@ function. In practice:
 | boolean                        | `"t"` / `"f"` string | `true` / `false`, or `"t"`/`"f"` |
 | arrays (e.g. `int[]`)          | PHP array            | PHP array               |
 | composite / row / record       | associative array    | associative array       |
+
+Array-typed *columns* inside rows — in `$_TD['new']`/`['old']`, rows from
+`spi_fetch_row`/`spi_fetchrow`, and composite arguments' fields — also arrive
+as PHP arrays, and can be assigned back as arrays (e.g. before a trigger
+`MODIFY`).
 | NULL                           | unset / null         | `return;` or `null`     |
 
 Arrays map naturally, including multidimensional arrays:
