@@ -5,13 +5,13 @@ All notable changes to PL/php are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.4.0] - 2026-07-06
 
 ### Fixed
 
 - **Per-function memory contexts.** Each compiled function's descriptor and
   subsidiary data (fmgr info records included) now live in their own memory
-  context, deleted wholesale on redefinition — implementing a FIXME as old
+  context, deleted wholesale on redefinition, implementing a FIXME as old
   as the file. This also closes a use-after-free window: the compiled-
   function cache used to briefly point at freed memory during recompilation,
   which an unluckily timed statement cancel could have hit.
@@ -39,7 +39,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   fields of composite arguments, and composites inside arrays now arrive as
   associative PHP arrays (recursively, arrays included), and PHP arrays
   convert back to composite values on return, in `return_next` rows, and
-  through trigger `MODIFY` — completing the structural-conversion work begun
+  through trigger `MODIFY`, completing the structural-conversion work begun
   with array columns in 2.3.0.
 - `anycompatible` and `anycompatiblearray` are accepted as polymorphic
   argument/return types on PostgreSQL 13 and newer.
@@ -55,16 +55,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   (`doc/benchmarks.md`) comparing PL/php with PL/pgSQL and PL/Perl: within a
   few percent on scalar and string work, 1.75× PL/Perl on SPI row loops.
 
-## [2.3.0] — 2026-07-06
+## [2.3.0] - 2026-07-06
 
 ### Added
 
-- **Continuous integration** — a GitHub Actions matrix building and running
+- **Continuous integration**: a GitHub Actions matrix building and running
   the full regression suite (core + `jsonb_plphp`) on PostgreSQL 11-18 and
   PHP 8.1/8.2/8.3/8.4 for every pull request.
 - **VARIADIC parameters.** A variadic function's collected arguments arrive
   as a single PHP array, matching every other PL (`VARIADIC "any"` remains
-  unsupported and is rejected with a clear error). Previously any VARIADIC
+  unsupported and is rejected with an error). Previously any VARIADIC
   declaration failed.
 
 ### Changed
@@ -86,7 +86,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   several are installed (see INSTALL for a packaging caveat about shared
   SONAMEs).
 
-## [2.2.0] — 2026-07-05
+## [2.2.0] - 2026-07-05
 
 ### Added
 
@@ -99,24 +99,24 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   errors inside `subtransaction()` callbacks are now catchable too.
 - **Whole-array set-returning functions.** An SRF may return the entire result
   set as one array with one element per row (PL/Perl's "return a reference to
-  an array" form), instead of — or in addition to — calling `return_next`.
+  an array" form), instead of or in addition to calling `return_next`.
   This had been PL/php 1.x behavior that 2.0 silently broke (such functions
   returned zero rows).
-- **`spi_each(query, callable)`** — invoke a callback once per row, streaming
+- **`spi_each(query, callable)`**: invoke a callback once per row, streaming
   over a cursor; returning `false` stops early. The inline-loop equivalent of
   PL/Tcl's `spi_exec -array a $query { body }`.
-- **`plphp.on_init`** — a snippet of PHP source executed when the interpreter
+- **`plphp.on_init`**: a snippet of PHP source executed when the interpreter
   is first initialized in a session, before modules and `plphp.start_proc`;
   the counterpart of `plperl.on_init`.
-- **`jsonb_plphp` transform extension** — with `TRANSFORM FOR TYPE jsonb`,
+- **`jsonb_plphp` transform extension**: with `TRANSFORM FOR TYPE jsonb`,
   jsonb arguments arrive as native PHP values (arrays/int/float/bool/null)
   and PHP values convert straight back to jsonb, like `jsonb_plperl` (which
   PL/Tcl has no equivalent of). PL/php core gained the `TRANSFORM FOR TYPE`
   protocol support this builds on.
 
-- **A tested cookbook** (`doc/cookbook.md`): practical recipes — `filter_var`
+- **A tested cookbook** (`doc/cookbook.md`): `filter_var`
   CHECK constraints, bcrypt passwords, HMAC tokens, recursive JSON reshaping,
-  regex set-returning functions, a generic JSON-diff audit trigger, batch
+  regex set-returning functions, a JSON-diff audit trigger, batch
   processing with periodic commits, streaming scans that stop early, CSV and
   XML shredding, and zlib compression. Every recipe in the "Tested" section
   runs in the new `cookbook` regression test.
@@ -131,7 +131,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - **INOUT parameters in procedures work.** `CALL` on a PL/php procedure with
   INOUT parameters used to fail ("function returning record called in
   context that cannot accept type record"): a procedure's result is always a
-  record — even with a single INOUT parameter — which broke both the
+  record (even with a single INOUT parameter), which broke both the
   single-OUT scalar-return shortcut and the record descriptor lookup (which
   needed a `ReturnSetInfo` that `CALL` never supplies; it is now derived
   from the parameter declarations via `get_call_result_type`). The usual
@@ -151,11 +151,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   of the old "value starts with `{`" heuristic, so a `text` argument whose
   value happens to start with a brace is no longer misparsed as an array.
 
-## [2.1.0] — 2026-07-05
+## [2.1.0] - 2026-07-05
 
 ### Added
 
-- **Cursor-streaming SPI** — `spi_query(query)` opens a cursor and returns its
+- **Cursor-streaming SPI**: `spi_query(query)` opens a cursor and returns its
   name, `spi_fetchrow(cursor)` fetches one row at a time (returning `false`
   and closing the cursor at exhaustion), and `spi_cursor_close(cursor)`
   abandons a cursor early. Large result sets can now be scanned in constant
@@ -170,7 +170,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   result resource); code that relied on the alias should call
   `spi_exec_prepared` instead.
 
-## [2.0.0] — 2026-07-01
+## [2.0.0] - 2026-07-01
 
 A ground-up modernization of PL/php (the previous release, 1.4, dates from 2010)
 for current software. Tested on **PostgreSQL 11 through 18** with **PHP 8.3**
@@ -178,17 +178,17 @@ for current software. Tested on **PostgreSQL 11 through 18** with **PHP 8.3**
 
 ### Added
 
-- **Anonymous `DO` blocks** — `DO $$ ... $$ LANGUAGE plphp`, via an inline
+- **Anonymous `DO` blocks**: `DO $$ ... $$ LANGUAGE plphp`, via an inline
   handler.
-- **Event trigger functions** — `RETURNS event_trigger`, with `$_TD['event']`
+- **Event trigger functions**: `RETURNS event_trigger`, with `$_TD['event']`
   and `$_TD['tag']`.
-- **Prepared statements** — `spi_prepare`, `spi_exec_prepared`,
+- **Prepared statements**: `spi_prepare`, `spi_exec_prepared`,
   `spi_query_prepared`, and `spi_freeplan`.
-- **Transaction control** in procedures — `spi_commit` and `spi_rollback`.
-- **Explicit subtransactions** — `subtransaction(callable, ...)`.
-- **Quoting helpers** — `quote_literal`, `quote_nullable`, `quote_ident`.
+- **Transaction control** in procedures: `spi_commit` and `spi_rollback`.
+- **Explicit subtransactions**: `subtransaction(callable, ...)`.
+- **Quoting helpers**: `quote_literal`, `quote_nullable`, `quote_ident`.
 - **`elog(level, message)`** supporting `DEBUG`/`LOG`/`INFO`/`NOTICE`/`WARNING`/`ERROR`.
-- **Session initialization** — module autoloading from a `plphp_modules` table
+- **Session initialization**: module autoloading from a `plphp_modules` table
   and a `plphp.start_proc` configuration setting.
 - Packaging as a first-class extension (`CREATE EXTENSION plphp`) and a
   regression test for every new feature.
@@ -228,21 +228,21 @@ for current software. Tested on **PostgreSQL 11 through 18** with **PHP 8.3**
   the `TRUSTED` attribute; only superusers may install the extension or create
   PL/php functions.
 
-## [1.4] — 2010-07-12
+## [1.4] - 2010-07-12
 
 ### Added
 
 - Support for PostgreSQL 8.4 and 9.0.
 - Support for PHP 5.3.
 
-## [1.3.5-beta1] — 2007-10-15
+## [1.3.5-beta1] - 2007-10-15
 
 ### Added
 
 - Support for parameter names.
 - Support for PostgreSQL 8.3.
 
-## [1.3.3] — 2007-03-29
+## [1.3.3] - 2007-03-29
 
 ### Added
 
@@ -258,31 +258,31 @@ for current software. Tested on **PostgreSQL 11 through 18** with **PHP 8.3**
 - Several memory leaks.
 - Bugs in argument handling.
 
-## [1.3.2] — 2007-03-01
+## [1.3.2] - 2007-03-01
 
 ### Changed
 
 - Link against the PHP embed SAPI instead of Apache's `mod_php`, making the
-  build far more robust against internal PHP changes.
+  build robust against internal PHP changes.
 
 ### Added
 
 - `configure` support for detecting required utilities and libraries.
 
-## [1.3.1] — 2006-12-01
+## [1.3.1] - 2006-12-01
 
 ### Changed
 
 - Minor Makefile cleanups.
 
-## [1.2] — 2005-12-13
+## [1.2] - 2005-12-13
 
 ### Added
 
 - Set-returning functions.
 - Support for PostgreSQL 8.0.
 
-## [1.1] — 2005-12-05
+## [1.1] - 2005-12-05
 
 Supports PostgreSQL 8.0 and 8.1.
 

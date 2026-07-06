@@ -32,7 +32,7 @@ intentionally out of scope, with the rationale given.
 | `spi_cursor_close`            | `spi_cursor_close` **added** | Abandon a cursor early |
 | errors trappable with `eval`  | `try`/`catch (PgError $e)` **added** | PgError carries SQLSTATE, detail, and hint (richer than `$@`) |
 | SRF returns array reference   | return an array from the SRF **added** | One element per row, as an alternative to `return_next` |
-| —                             | `spi_each(query, callable)` **added** | Streaming per-row callback; PL/Perl has no equivalent |
+| (no equivalent)               | `spi_each(query, callable)` **added** | Streaming per-row callback; PL/Perl has no equivalent |
 | `elog(level, msg)`            | `elog` **added** | DEBUG/LOG/INFO/NOTICE/WARNING/ERROR; `pg_raise` remains as the older spelling |
 | `spi_prepare`                 | `spi_prepare` **added** | Type names given as SQL type strings |
 | `spi_exec_prepared`           | `spi_exec_prepared` **added** | |
@@ -42,9 +42,9 @@ intentionally out of scope, with the rationale given.
 | `quote_nullable`              | `quote_nullable` **added** | |
 | `quote_ident`                 | `quote_ident` **added** | |
 | `spi_commit` / `spi_rollback` | `spi_commit` / `spi_rollback` **added** | Transaction control in a procedure invoked by `CALL` (non-atomic) |
-| `looks_like_number`           | — | Use PHP's built-in `is_numeric()` |
-| `encode_bytea` / `decode_bytea` | — | Use PHP's `bin2hex` / `hex2bin`, `base64_encode`, etc. |
-| `encode_array_literal` / `encode_typed_literal` | — | Marginal; build literals with the quoting helpers |
+| `looks_like_number`           | (none) | Use PHP's built-in `is_numeric()` |
+| `encode_bytea` / `decode_bytea` | (none) | Use PHP's `bin2hex` / `hex2bin`, `base64_encode`, etc. |
+| `encode_array_literal` / `encode_typed_literal` | (none) | Marginal; build literals with the quoting helpers |
 
 ## Interpreter configuration
 
@@ -52,14 +52,14 @@ intentionally out of scope, with the rationale given.
 |-----------------------|--------|-------|
 | `plperl.on_init`      | `plphp.on_init` **added** | PHP source run at interpreter initialization |
 | (start proc, PL/Tcl-style) | `plphp.start_proc` | Runs a named PL/php function once per session |
-| `plperl.use_strict`   | — | No PHP equivalent; PHP is always "strict" about undefined functions |
+| `plperl.use_strict`   | (none) | No PHP equivalent; PHP is always "strict" about undefined functions |
 
 ## Transforms
 
 | PL/Perl               | PL/php | Notes |
 |-----------------------|--------|-------|
 | `jsonb_plperl`        | `jsonb_plphp` **added** | `TRANSFORM FOR TYPE jsonb`: native values in both directions |
-| `bool_plperl`         | — | PL/php already maps `t`/`f`; a transform would add little |
+| `bool_plperl`         | (none) | PL/php already maps `t`/`f`; a transform would add little |
 
 ## Intentionally not implemented
 
