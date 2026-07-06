@@ -177,7 +177,7 @@ converts values of that type **inside**:
   `'MODIFY'`).
 
 Rows read back through SPI (`spi_exec` / `spi_fetch_row` / cursors) are **not**
-transformed — like a value crossing the boundary without a `TRANSFORM` clause,
+transformed; like a value crossing the boundary without a `TRANSFORM` clause,
 they arrive in their text form.
 
 ### Domains
@@ -519,7 +519,7 @@ the PostgreSQL log.
 
 `pg_raise(level, message [, detail [, hint [, sqlstate]]])` accepts `notice`,
 `warning`, or `error`, and optionally attaches a `DETAIL`, a `HINT`, and (for
-`error`) a custom five-character `SQLSTATE` — the equivalent of PL/pgSQL's
+`error`) a custom five-character `SQLSTATE`, the equivalent of PL/pgSQL's
 `RAISE ... USING`:
 
 ```php
