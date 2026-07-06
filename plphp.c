@@ -487,6 +487,21 @@ plphp_init(void)
 			INI_HARDCODED("max_input_time", "-1");
 
 			/*
+			 * The host's php.ini must not decide which errors reach our
+			 * zend_error_cb, or how they are routed: force full reporting
+			 * and disable opcache/JIT, which add nothing for our one-shot
+			 * eval'd functions and can interfere with error delivery.
+			 * (GitHub's runner images, for example, ship a PHP configured
+			 * with opcache+JIT enabled for CLI, which broke both notices
+			 * and error messages.)
+			 */
+			INI_HARDCODED("error_reporting", "32767");	/* E_ALL */
+			INI_HARDCODED("display_errors", "0");
+			INI_HARDCODED("log_errors", "0");
+			INI_HARDCODED("opcache.enable", "0");
+			INI_HARDCODED("opcache.enable_cli", "0");
+
+			/*
 			 * Set memory limit to ridiculously high value.  This helps the
 			 * server not to crash, because the PHP allocator has the really
 			 * stupid idea of calling exit() if the limit is exceeded.
