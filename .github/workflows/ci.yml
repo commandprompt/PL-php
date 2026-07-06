@@ -88,3 +88,69 @@ jobs:
         run: |
           cat regression.diffs 2>/dev/null || true
           cat jsonb_plphp/regression.diffs 2>/dev/null || true
+
+  asan:
+    name: ASAN (PG 18 / PHP 8.3)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add the PGDG apt repository
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+
+      - name: Install PostgreSQL 18 and PHP 8.3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-18 postgresql-server-dev-18 \
+            php8.3-dev libphp8.3-embed
+
+      - name: Build and install with AddressSanitizer
+        run: |
+          make PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config PHP_CONFIG=php-config8.3 \
+               ASAN_FLAGS="-fsanitize=address -fno-omit-frame-pointer"
+          sudo make PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config PHP_CONFIG=php-config8.3 \
+               ASAN_FLAGS="-fsanitize=address -fno-omit-frame-pointer" install
+          make -C jsonb_plphp PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config PHP_CONFIG=php-config8.3 \
+               ASAN_FLAGS="-fsanitize=address -fno-omit-frame-pointer"
+          sudo make -C jsonb_plphp PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config PHP_CONFIG=php-config8.3 \
+               ASAN_FLAGS="-fsanitize=address -fno-omit-frame-pointer" install
+
+      - name: Start the cluster with libasan preloaded
+        run: |
+          sudo pg_createcluster 18 main 2>/dev/null || true
+          libasan=$(gcc -print-file-name=libasan.so)
+          # PHP_INI_SCAN_DIR= : PHP dlopens shared extensions with
+          # RTLD_DEEPBIND, which the sanitizer runtime rejects
+          sudo -u postgres env LD_PRELOAD=$libasan PHP_INI_SCAN_DIR= \
+            ASAN_OPTIONS=detect_leaks=0:abort_on_error=1:log_path=/tmp/asan \
+            /usr/lib/postgresql/18/bin/pg_ctl -w -t 120 \
+            -D /var/lib/postgresql/18/main \
+            -o "-c config_file=/etc/postgresql/18/main/postgresql.conf" \
+            -l /tmp/pg-asan.log start
+
+      - name: Run the regression tests under ASAN
+        run: |
+          port=$(pg_lsclusters | awk '$1 == 18 && $2 == "main" { print $3 }')
+          sudo chmod a+x /home/runner /home/runner/work /home/runner/work/PL-php
+          chmod -R a+rwX .
+          # the cookbook test needs SimpleXML, unavailable with extensions off
+          tests=$(grep '^REGRESS' Makefile | sed 's/REGRESS = //; s/ cookbook//')
+          sudo -u postgres env PGPORT=$port \
+            make PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config \
+                 REGRESS="$tests" installcheck
+          sudo -u postgres env PGPORT=$port \
+            make -C jsonb_plphp \
+                 PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config installcheck
+
+      - name: Show ASAN reports and diffs on failure
+        if: failure()
+        run: |
+          sudo cat /tmp/asan.* 2>/dev/null || true
+          sudo tail -50 /tmp/pg-asan.log 2>/dev/null || true
+          cat regression.diffs 2>/dev/null || true
+          cat jsonb_plphp/regression.diffs 2>/dev/null || true

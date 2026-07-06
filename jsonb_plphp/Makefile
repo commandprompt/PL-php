@@ -25,7 +25,10 @@ PHP_LIBNAME := $(patsubst lib%.so,%,$(notdir $(firstword $(wildcard \
 	$(PHP_LIBDIR)/libphp*.so /usr/lib/libphp*.so /usr/lib/*/libphp*.so))))
 
 PG_CPPFLAGS = $(PHP_INCLUDES)
-SHLIB_LINK = -L$(PHP_LIBDIR) -l$(PHP_LIBNAME) $(shell $(PHP_CONFIG) --ldflags)
+# Extra flags hook, e.g. ASAN_FLAGS="-fsanitize=address" for sanitizer builds
+ASAN_FLAGS ?=
+PG_CFLAGS += $(ASAN_FLAGS)
+SHLIB_LINK = $(ASAN_FLAGS) -L$(PHP_LIBDIR) -l$(PHP_LIBNAME) $(shell $(PHP_CONFIG) --ldflags)
 
 REGRESS = jsonb_plphp
 
