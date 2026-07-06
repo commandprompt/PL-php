@@ -90,6 +90,7 @@ $$;
 -- Invalid attribute "a" in NEW
 INSERT INTO trigfunc_test1 VALUES (1);
 ERROR:  $_TD['new'] does not contain attribute "b"
+CONTEXT:  PL/php function "trigfunc_test1"
 -- Create NEW as the correct array, but with a NULL value
 CREATE OR REPLACE FUNCTION trigfunc_test1() RETURNS trigger LANGUAGE plphp AS $$
 	$_TD['new'] = array('b' => NULL);
@@ -113,6 +114,7 @@ $$;
 INSERT INTO trigfunc_test1 VALUES (1);
 ERROR:  insufficient number of keys in $_TD['new']
 DETAIL:  At least 1 expected, 0 found.
+CONTEXT:  PL/php function "trigfunc_test1"
 -- Make "b" a literal of an incorrect type
 CREATE OR REPLACE FUNCTION trigfunc_test1() RETURNS trigger LANGUAGE plphp AS $$
 	$_TD['new'] = array('b' => 'foobar');
@@ -120,6 +122,7 @@ CREATE OR REPLACE FUNCTION trigfunc_test1() RETURNS trigger LANGUAGE plphp AS $$
 $$;
 INSERT INTO trigfunc_test1 VALUES (1);
 ERROR:  invalid input syntax for type integer: "foobar"
+CONTEXT:  PL/php function "trigfunc_test1"
 -- Make "b" an array
 CREATE OR REPLACE FUNCTION trigfunc_test1() RETURNS trigger LANGUAGE plphp AS $$
 	$_TD['new'] = array('b' => array(1, 2, 3));
@@ -127,6 +130,7 @@ CREATE OR REPLACE FUNCTION trigfunc_test1() RETURNS trigger LANGUAGE plphp AS $$
 $$;
 INSERT INTO trigfunc_test1 VALUES (1);
 ERROR:  invalid input syntax for type integer: "{1,2,3}"
+CONTEXT:  PL/php function "trigfunc_test1"
 -- What happens if we create a table whose columns are numbers?
 -- Does PHP regular array handling work?
 CREATE TABLE numbers ("0" int, "1" text, "2" float, "3" numeric[]);
@@ -186,6 +190,7 @@ create trigger foo before insert on foo
 for each row execute procedure foo_trig();
 insert into foo values (1, 'one');
 ERROR:  $_TD is not an array
+CONTEXT:  PL/php function "foo_trig"
 create or replace function foo_trig() returns trigger
 language plphp as $$
 	$_TD = array();
@@ -193,6 +198,7 @@ language plphp as $$
 $$;
 insert into foo values (1, 'one');
 ERROR:  $_TD['new'] not found
+CONTEXT:  PL/php function "foo_trig"
 create or replace function foo_trig() returns trigger
 language plphp as $$
 	$_TD = array('new' => 1);
@@ -200,6 +206,7 @@ language plphp as $$
 $$;
 insert into foo values (1, 'one');
 ERROR:  $_TD['new'] must be an array
+CONTEXT:  PL/php function "foo_trig"
 create or replace function foo_trig() returns trigger
 language plphp as $$
 	$_TD = array('new' => array());
@@ -208,3 +215,4 @@ $$;
 insert into foo values (1, 'one');
 ERROR:  insufficient number of keys in $_TD['new']
 DETAIL:  At least 2 expected, 0 found.
+CONTEXT:  PL/php function "foo_trig"

@@ -81,6 +81,7 @@ $$
 $$ LANGUAGE plphp;
 SELECT * FROM plphp.out_invalid();
 ERROR:  "long identifier" can not be used as a PHP variable name
+CONTEXT:  PL/php function "out_invalid"
 -- INOUT parameters in procedures: a procedure's result is always a record
 -- (even with one INOUT), returned via the same assignment convention
 CREATE PROCEDURE proc_one(INOUT x int) LANGUAGE plphp AS $$

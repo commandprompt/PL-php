@@ -5,17 +5,21 @@ CREATE FUNCTION invalid() RETURNS void LANGUAGE plphp AS $$
 	asdasd
 $$;
 ERROR:  function "invalid" does not validate: syntax error, unexpected token "}"
+CONTEXT:  compilation of PL/php function "invalid"
 CREATE FUNCTION invalid() RETURNS void LANGUAGE plphp AS $$
 	{
 $$;
 ERROR:  function "invalid" does not validate: Unclosed '{' on line 1
+CONTEXT:  compilation of PL/php function "invalid"
 CREATE OR REPLACE FUNCTION valid() RETURNS void LANGUAGE plphp AS $$
 	array_append();
 $$;
 select valid();
 ERROR:  Uncaught Error: Call to undefined function array_append() in plphp function source:2 at line 2
+CONTEXT:  PL/php function "valid"
 CREATE FUNCTION valid2() RETURNS void LANGUAGE plphp AS $$
 	return array();
 $$;
 select valid2();
 ERROR:  this plphp function cannot return arrays
+CONTEXT:  PL/php function "valid2"

@@ -120,6 +120,7 @@ NOTICE:  plphp: got value 3.000000
 -- oops, division by zero
 select div_by_zero('{1,2,3}', 0);
 ERROR:  division by zero at line 7
+CONTEXT:  PL/php function "div_by_zero"
 -- 1/2 + 2/2 + 3/2 = 3
 select div_by_zero('{1,2,3}', 2);
 NOTICE:  plphp: got value 0.500000

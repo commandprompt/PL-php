@@ -159,5 +159,6 @@ $$;
 SELECT badret();
 ERROR:  cannot transform this PHP value to jsonb
 DETAIL:  PHP type 8 has no jsonb representation.
+CONTEXT:  PL/php function "badret"
 DROP FUNCTION roundtrip(jsonb), typeinfo(jsonb), makedoc(), makenum(),
               redact(jsonb, text), astext(jsonb), badret();

@@ -37,9 +37,11 @@ CREATE FUNCTION cannot_commit() RETURNS void LANGUAGE plphp AS $$
 $$;
 SELECT cannot_commit();
 ERROR:  invalid transaction termination at line 2
+CONTEXT:  PL/php function "cannot_commit"
 -- Nor in a procedure called inside an explicit transaction block.
 BEGIN;
 CALL do_commits();
 ERROR:  invalid transaction termination at line 4
+CONTEXT:  PL/php function "do_commits"
 ROLLBACK;
 DROP TABLE txn_test;

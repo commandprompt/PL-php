@@ -20,14 +20,18 @@ insert into b values (1);
 insert into b values (2);
 insert into b values (3);
 ERROR:  value a=3 is not allowed at line 13
+CONTEXT:  PL/php function "trigfunc_ins"
 insert into b values (4);
 insert into b values (5);
 ERROR:  expected trigger function to return NULL, 'SKIP' or 'MODIFY'
+CONTEXT:  PL/php function "trigfunc_ins"
 insert into b values (6);
 ERROR:  value a=6 is not allowed at line 13
+CONTEXT:  PL/php function "trigfunc_ins"
 insert into b values (1);
 insert into b values (3);
 ERROR:  value a=3 is not allowed at line 13
+CONTEXT:  PL/php function "trigfunc_ins"
 insert into b values (2);
 select * from b;
  a 

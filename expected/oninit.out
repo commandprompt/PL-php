@@ -7,6 +7,7 @@ $$;
 SET plphp.on_init = 'throw new Exception("on_init boom");';
 SELECT oninit_victim();
 ERROR:  plphp: on_init failed: on_init boom
+CONTEXT:  PL/php function "oninit_victim"
 RESET plphp.on_init;
 SELECT oninit_victim();
  oninit_victim 

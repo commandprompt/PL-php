@@ -13,6 +13,7 @@ LINE 1: SELECT cov_no_such_fn()
                ^
 HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
 QUERY:  SELECT cov_no_such_fn()
+CONTEXT:  PL/php function "cov_ident"
 RESET plphp.start_proc;
 SELECT cov_ident(1);
  cov_ident 
@@ -144,6 +145,7 @@ SELECT cov_catch();
 -- A DO block can fail at runtime (not just at parse time)
 DO $$ pg_raise('error', 'do block runtime error'); $$ LANGUAGE plphp;
 ERROR:  do block runtime error at line 1
+CONTEXT:  PL/php anonymous code block
 DROP TABLE cov_t;
 -- Redefinition churn: each CREATE OR REPLACE (and ALTER) discards the old
 -- compiled function and its memory context and recompiles on next use
@@ -176,6 +178,7 @@ SELECT churn();
 -- a body that fails to compile poisons the cache entry; fixing it recovers
 CREATE OR REPLACE FUNCTION churn() RETURNS int LANGUAGE plphp AS $$ return $$;
 ERROR:  function "churn" does not validate: syntax error, unexpected token "}", expecting ";"
+CONTEXT:  compilation of PL/php function "churn"
 SELECT churn();
  churn 
 -------

@@ -67,6 +67,7 @@ SELECT php_get_shared('fourth');
 
 SELECT php_get_shared_ary('fourth');
 ERROR:  function declared to return array must return an array
+CONTEXT:  PL/php function "php_get_shared_ary"
 -- A real array shared between calls
 CREATE OR REPLACE FUNCTION php_set_shared_ary (text, text[]) RETURNS text AS $$
   global $_SHARED;

@@ -16,6 +16,21 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   function cache used to briefly point at freed memory during recompilation,
   which an unluckily timed statement cancel could have hit.
 
+## [Unreleased]
+
+### Added
+
+- **Error CONTEXT lines.** Messages raised while PL/php code runs carry a
+  `CONTEXT: PL/php function "name"` line (or the anonymous-block/compilation
+  variants), like every other procedural language.
+
+### Fixed
+
+- **Backend crash when an error crossed nested PL/php calls.** A PostgreSQL
+  error unwinding out of a handler's `zend_try` left Zend's bailout
+  environment pointing into a dead stack frame; the next uncaught error then
+  jumped into garbage. Nested regression cases added.
+
 ## [2.3.0] — 2026-07-06
 
 ### Added
