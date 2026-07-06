@@ -93,6 +93,9 @@ plphp_throw_pg_error(ErrorData *edata)
 										"hint", strlen("hint"),
 										edata->hint);
 	}
+	/* Keep the fields for the uncaught (zend_bailout) reporting path. */
+	plphp_stash_error_fields(unpack_sql_state(edata->sqlerrcode),
+							 edata->detail, edata->hint);
 	FreeErrorData(edata);
 }
 
@@ -124,6 +127,9 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_pg_raise, 0, 0, 2)
 	ZEND_ARG_INFO(0, level)
 	ZEND_ARG_INFO(0, message)
+	ZEND_ARG_INFO(0, detail)
+	ZEND_ARG_INFO(0, hint)
+	ZEND_ARG_INFO(0, sqlstate)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_return_next, 0, 0, 0)
@@ -439,46 +445,102 @@ ZEND_FUNCTION(spi_rewind)
 /*
  * pg_raise
  *      User-callable function for sending messages to the Postgres log.
+ *
+ * pg_raise(level, message [, detail [, hint [, sqlstate]]]).  The optional
+ * detail, hint and (for ERROR) sqlstate mirror PL/pgSQL's RAISE ... USING:
+ * an ERROR is thrown as a catchable PgError carrying all three, and a
+ * WARNING/NOTICE is reported with DETAIL/HINT attached.
  */
 ZEND_FUNCTION(pg_raise)
 {
 	char       *level = NULL,
-			   *message = NULL;
+			   *message = NULL,
+			   *detail = NULL,
+			   *hint = NULL,
+			   *sqlstate = NULL;
 	size_t      level_len,
-				message_len;
+				message_len,
+				detail_len = 0,
+				hint_len = 0,
+				sqlstate_len = 0;
 	int			elevel = 0;
 
-	if (zend_parse_parameters(ZEND_NUM_ARGS(), "ss",
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "ss|s!s!s!",
 							  &level, &level_len,
-							  &message, &message_len) == FAILURE)
+							  &message, &message_len,
+							  &detail, &detail_len,
+							  &hint, &hint_len,
+							  &sqlstate, &sqlstate_len) == FAILURE)
 	{
 		zend_error(E_WARNING, "cannot parse parameters in %s",
 				   get_active_function_name());
 		return;
 	}
 
+	/* An explicit SQLSTATE must be five [0-9A-Z] characters, like RAISE. */
+	if (sqlstate != NULL)
+	{
+		size_t		i;
+
+		if (sqlstate_len != 5)
+		{
+			zend_error(E_ERROR, "pg_raise: SQLSTATE must be exactly five characters");
+			return;
+		}
+		for (i = 0; i < 5; i++)
+			if (!((sqlstate[i] >= '0' && sqlstate[i] <= '9') ||
+				  (sqlstate[i] >= 'A' && sqlstate[i] <= 'Z')))
+			{
+				zend_error(E_ERROR, "pg_raise: SQLSTATE must contain only digits and upper-case ASCII letters");
+				return;
+			}
+	}
+
 	if (strcasecmp(level, "ERROR") == 0)
 	{
-		/* raise a catchable PgError, like PL/pgSQL's RAISE (SQLSTATE P0001) */
+		/* raise a catchable PgError, like PL/pgSQL's RAISE ... USING */
 		zend_object *ex = zend_throw_exception(plphp_PgError_ce, message, 0);
 
 		if (ex != NULL)
+		{
 			zend_update_property_string(plphp_PgError_ce, ex,
 										"sqlstate", strlen("sqlstate"),
-										"P0001");
+										sqlstate != NULL ? sqlstate : "P0001");
+			if (detail != NULL)
+				zend_update_property_string(plphp_PgError_ce, ex,
+											"detail", strlen("detail"), detail);
+			if (hint != NULL)
+				zend_update_property_string(plphp_PgError_ce, ex,
+											"hint", strlen("hint"), hint);
+		}
+		/* Keep the fields for the uncaught (zend_bailout) reporting path. */
+		plphp_stash_error_fields(sqlstate != NULL ? sqlstate : "P0001",
+								 detail, hint);
 		return;
 	}
 	else if (strcasecmp(level, "WARNING") == 0)
-		elevel = E_WARNING;
+		elevel = WARNING;
 	else if (strcasecmp(level, "NOTICE") == 0)
-		elevel = E_NOTICE;
+		elevel = NOTICE;
 	else
 	{
 		zend_error(E_ERROR, "incorrect log level");
 		return;
 	}
 
-	zend_error(elevel, "%s", message);
+	/*
+	 * With no DETAIL/HINT this is the historical case: route through
+	 * zend_error so the message formatting is byte-for-byte unchanged.  Only
+	 * when the caller supplies extra fields do we ereport directly to carry
+	 * them.
+	 */
+	if (detail == NULL && hint == NULL)
+		zend_error(elevel == WARNING ? E_WARNING : E_NOTICE, "%s", message);
+	else
+		ereport(elevel,
+				(errmsg("%s", message),
+				 (detail != NULL) ? errdetail("%s", detail) : 0,
+				 (hint != NULL) ? errhint("%s", hint) : 0));
 }
 
 /*
@@ -1424,6 +1486,8 @@ ZEND_FUNCTION(elog)
 			zend_update_property_string(plphp_PgError_ce, ex,
 										"sqlstate", strlen("sqlstate"),
 										"P0001");
+		/* Keep the fields for the uncaught (zend_bailout) reporting path. */
+		plphp_stash_error_fields("P0001", NULL, NULL);
 	}
 	else
 		ereport(elevel, (errmsg("%s", message)));

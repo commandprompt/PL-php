@@ -205,10 +205,16 @@ static StringInfo currmsg = NULL;
 /*
  * for PHP <-> Postgres error message passing
  *
- * XXX -- it would be much better if we could save errcontext,
- * errhint, etc as well.
+ * error_msg carries the message across a zend_bailout to the zend_catch that
+ * turns it into a Postgres ERROR.  For an uncaught PgError the exception
+ * object is no longer reachable from the error callback, so its SQLSTATE /
+ * DETAIL / HINT are stashed alongside (by plphp_stash_error_fields, at throw
+ * time) and re-attached at the same zend_catch sites.
  */
 static char *error_msg = NULL;
+static char *error_sqlstate = NULL;
+static char *error_detail = NULL;
+static char *error_hint = NULL;
 
 /* GUC: PHP code to run once when the interpreter is initialized */
 static char *plphp_on_init = NULL;
@@ -255,8 +261,20 @@ static zval *plphp_call_php_trig(plphp_proc_desc *desc,
 
 static void plphp_error_cb(int type, zend_string *error_filename,
 						   const uint32_t error_lineno, zend_string *message);
+/*
+ * pg_noreturn is the prefix noreturn specifier as of PG 18; older releases
+ * used the pg_attribute_noreturn() suffix macro instead.
+ */
+#ifndef pg_noreturn
+#define pg_noreturn pg_attribute_noreturn()
+#endif
+
 static bool is_valid_php_identifier(char *name);
+static char *plphp_pop_exception(char **p_sqlstate, char **p_detail,
+								 char **p_hint);
 static char *plphp_pop_exception_message(void);
+pg_noreturn static void plphp_report_php_error(char *msg, char *sqlstate,
+											   char *detail, char *hint);
 
 /*
  * Error context callbacks: every message raised while PL/php code runs gets
@@ -844,7 +862,8 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 				strncpy(str, error_msg, sizeof(str));
 				pfree(error_msg);
 				error_msg = NULL;
-				elog(ERROR, "%s", str);
+				plphp_report_php_error(str, error_sqlstate,
+									   error_detail, error_hint);
 			}
 			else
 				elog(ERROR, "fatal error");
@@ -947,14 +966,20 @@ plphp_inline_handler(PG_FUNCTION_ARGS)
 								   &retval, 0, NULL) == FAILURE)
 				elog(ERROR, "could not execute inline code block");
 
-			exmsg = plphp_pop_exception_message();
+			{
+				char   *sqlstate,
+					   *detail,
+					   *hint;
 
-			zval_ptr_dtor(&funcname_zv);
-			zval_ptr_dtor(&retval);
-			zend_hash_str_del(CG(function_table), funcname, strlen(funcname));
+				exmsg = plphp_pop_exception(&sqlstate, &detail, &hint);
 
-			if (exmsg != NULL)
-				elog(ERROR, "%s", exmsg);
+				zval_ptr_dtor(&funcname_zv);
+				zval_ptr_dtor(&retval);
+				zend_hash_str_del(CG(function_table), funcname, strlen(funcname));
+
+				if (exmsg != NULL)
+					plphp_report_php_error(exmsg, sqlstate, detail, hint);
+			}
 		}
 		zend_catch
 		{
@@ -965,7 +990,8 @@ plphp_inline_handler(PG_FUNCTION_ARGS)
 				strlcpy(str, error_msg, sizeof(str));
 				pfree(error_msg);
 				error_msg = NULL;
-				elog(ERROR, "%s", str);
+				plphp_report_php_error(str, error_sqlstate,
+									   error_detail, error_hint);
 			}
 			else
 				elog(ERROR, "fatal error");
@@ -1183,6 +1209,8 @@ plphp_trig_build_args(FunctionCallInfo fcinfo)
 		add_assoc_string(retval, "event", "DELETE");
 	else if (TRIGGER_FIRED_BY_UPDATE(tdata->tg_event))
 		add_assoc_string(retval, "event", "UPDATE");
+	else if (TRIGGER_FIRED_BY_TRUNCATE(tdata->tg_event))
+		add_assoc_string(retval, "event", "TRUNCATE");
 	else
 		elog(ERROR, "unknown firing event for trigger function");
 
@@ -1243,6 +1271,8 @@ plphp_trig_build_args(FunctionCallInfo fcinfo)
 		add_assoc_string(retval, "when", "BEFORE");
 	else if (TRIGGER_FIRED_AFTER(tdata->tg_event))
 		add_assoc_string(retval, "when", "AFTER");
+	else if (TRIGGER_FIRED_INSTEAD(tdata->tg_event))
+		add_assoc_string(retval, "when", "INSTEAD OF");
 	else
 		elog(ERROR, "unknown firing time for trigger function");
 
@@ -1298,10 +1328,13 @@ plphp_trigger_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 		elog(ERROR, "$_TD is not an array");
 
 	/*
-	 * In a BEFORE trigger, compute the return value.  In an AFTER trigger
-	 * it'll be ignored, so don't bother.
+	 * In a BEFORE or INSTEAD OF trigger, compute the return value: NULL (or
+	 * 'SKIP') suppresses the row, 'MODIFY' substitutes the edited $_TD['new'].
+	 * For INSTEAD OF this is how the row is marked as handled.  In an AFTER
+	 * trigger the value is ignored, so don't bother.
 	 */
-	if (TRIGGER_FIRED_BEFORE(trigdata->tg_event))
+	if (TRIGGER_FIRED_BEFORE(trigdata->tg_event) ||
+		TRIGGER_FIRED_INSTEAD(trigdata->tg_event))
 	{
 		switch (Z_TYPE_P(phpret))
 		{
@@ -1398,15 +1431,21 @@ plphp_event_trigger_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 						   1, &param) == FAILURE)
 		elog(ERROR, "could not call event trigger function %s", desc->proname);
 
-	exmsg = plphp_pop_exception_message();
+	{
+		char   *sqlstate,
+			   *detail,
+			   *hint;
 
-	zval_ptr_dtor(&funcname);
-	zval_ptr_dtor(&param);
-	zval_ptr_dtor(phpret);
-	efree(phpret);
+		exmsg = plphp_pop_exception(&sqlstate, &detail, &hint);
 
-	if (exmsg != NULL)
-		elog(ERROR, "%s", exmsg);
+		zval_ptr_dtor(&funcname);
+		zval_ptr_dtor(&param);
+		zval_ptr_dtor(phpret);
+		efree(phpret);
+
+		if (exmsg != NULL)
+			plphp_report_php_error(exmsg, sqlstate, detail, hint);
+	}
 
 	/* Disconnect from SPI; the return value of an event trigger is ignored */
 	if (SPI_finish() != SPI_OK_FINISH)
@@ -1883,8 +1922,15 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 				prodesc->ret_type |= PL_ARRAY;
 			else
 			{
-				/* function returns a normal (declared) array */
-				if (typlen == -1 && get_element_type(procStruct->prorettype))
+				/*
+				 * function returns a normal (declared) array; look through a
+				 * domain so a domain over an array is recognized too.  The
+				 * declared return type's input function (result_in_func, set
+				 * above from prorettype) still parses the result, so a domain's
+				 * CHECK constraints are enforced.
+				 */
+				if (typlen == -1 &&
+					get_element_type(getBaseType(procStruct->prorettype)))
 					prodesc->ret_type |= PL_ARRAY;
 			}
 
@@ -1979,10 +2025,17 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 			/* Main argument processing loop. */
 			for (i = 0; i < prodesc->n_total_args; i++)
 			{
-				prodesc->arg_typtype[i] = get_typtype(argtypes[i]);
+				/*
+				 * Classify through a domain to its base type, so a domain over
+				 * an array or composite is handled like the underlying array
+				 * or composite rather than as an opaque scalar.
+				 */
+				Oid		argbase = getBaseType(argtypes[i]);
+
+				prodesc->arg_typtype[i] = get_typtype(argbase);
 				if (prodesc->arg_typtype[i] != TYPTYPE_COMPOSITE)
 				{
-					get_type_io_data(argtypes[i],
+					get_type_io_data(argbase,
 									 IOFunc_output,
 									 &typlen,
 									 &typbyval,
@@ -1993,7 +2046,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 					perm_fmgr_info(typoutput, &(prodesc->arg_out_func[i]),
 								   prodesc->fn_cxt);
 					prodesc->arg_typioparam[i] = typioparam;
-					prodesc->arg_elemtype[i] = get_element_type(argtypes[i]);
+					prodesc->arg_elemtype[i] = get_element_type(argbase);
 				}
 				if (aliases && argnames[i][0] != '\0')
 				{
@@ -2312,16 +2365,45 @@ message_has_line_suffix(const char *msg)
 	return p != NULL;
 }
 
+/* Read a non-empty string property off an exception, else NULL (palloc'd). */
 static char *
-plphp_pop_exception_message(void)
+plphp_read_str_property(zend_object *ex, const char *name)
+{
+	zval	rv;
+	zval   *z = zend_read_property(ex->ce, ex, name, strlen(name), 1, &rv);
+
+	if (z != NULL && Z_TYPE_P(z) == IS_STRING && Z_STRLEN_P(z) > 0)
+		return pstrdup(Z_STRVAL_P(z));
+	return NULL;
+}
+
+/*
+ * Pop the pending PHP exception, returning its message (palloc'd) and, when
+ * it is a PgError, its SQLSTATE / DETAIL / HINT via the out-parameters (each
+ * NULL when absent; pass NULL to ignore).  Returns NULL if nothing is
+ * pending.  The exception is cleared.
+ */
+static char *
+plphp_pop_exception(char **p_sqlstate, char **p_detail, char **p_hint)
 {
 	zend_object *ex = EG(exception);
 	zval		 rv;
 	zval		*zmsg;
 	char		*msg;
+	bool		is_pgerror;
+
+	if (p_sqlstate != NULL)
+		*p_sqlstate = NULL;
+	if (p_detail != NULL)
+		*p_detail = NULL;
+	if (p_hint != NULL)
+		*p_hint = NULL;
 
 	if (ex == NULL)
 		return NULL;
+
+	is_pgerror = (plphp_PgError_ce != NULL &&
+				  instanceof_function(ex->ce, plphp_PgError_ce));
 
 	zmsg = zend_read_property(ex->ce, ex, "message", sizeof("message") - 1,
 							  1, &rv);
@@ -2331,8 +2413,7 @@ plphp_pop_exception_message(void)
 		 * For an uncaught PgError, report "<message> at line <N>" to match
 		 * the format database errors have always had in PL/php.
 		 */
-		if (plphp_PgError_ce != NULL &&
-			instanceof_function(ex->ce, plphp_PgError_ce))
+		if (is_pgerror)
 		{
 			zval	rvl;
 			zval   *zline = zend_read_property(ex->ce, ex, "line",
@@ -2356,8 +2437,85 @@ plphp_pop_exception_message(void)
 	else
 		msg = pstrdup("uncaught PHP exception");
 
+	/* Carry the structured fields through, so RAISE ... USING survives. */
+	if (is_pgerror)
+	{
+		if (p_sqlstate != NULL)
+			*p_sqlstate = plphp_read_str_property(ex, "sqlstate");
+		if (p_detail != NULL)
+			*p_detail = plphp_read_str_property(ex, "detail");
+		if (p_hint != NULL)
+			*p_hint = plphp_read_str_property(ex, "hint");
+	}
+
 	zend_clear_exception();
 	return msg;
+}
+
+static char *
+plphp_pop_exception_message(void)
+{
+	return plphp_pop_exception(NULL, NULL, NULL);
+}
+
+/*
+ * Re-raise a popped PHP exception as a PostgreSQL ERROR, preserving the
+ * PgError's SQLSTATE, DETAIL and HINT when present.  A NULL/invalid sqlstate
+ * falls back to ERRCODE_INTERNAL_ERROR, matching the old elog(ERROR) path
+ * for plain PHP exceptions.  Does not return.
+ */
+pg_noreturn static void
+plphp_report_php_error(char *msg, char *sqlstate, char *detail, char *hint)
+{
+	int		code = (sqlstate != NULL && strlen(sqlstate) == 5)
+		? MAKE_SQLSTATE(sqlstate[0], sqlstate[1], sqlstate[2],
+						sqlstate[3], sqlstate[4])
+		: ERRCODE_INTERNAL_ERROR;
+
+	ereport(ERROR,
+			(errcode(code),
+			 errmsg("%s", msg),
+			 (detail != NULL) ? errdetail("%s", detail) : 0,
+			 (hint != NULL) ? errhint("%s", hint) : 0));
+	pg_unreachable();
+}
+
+/*
+ * Remember the SQLSTATE / DETAIL / HINT of the PgError that is about to be
+ * thrown, so an uncaught one can still report them from the zend_catch bridge
+ * (where the exception object is gone).  Stored in TopMemoryContext, freeing
+ * the previous set; a NULL argument clears that field.  Every throw overwrites
+ * this, so it always reflects the most recently thrown PgError.
+ */
+void
+plphp_stash_error_fields(const char *sqlstate, const char *detail,
+						 const char *hint)
+{
+	MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+
+	if (error_sqlstate != NULL)
+	{
+		pfree(error_sqlstate);
+		error_sqlstate = NULL;
+	}
+	if (error_detail != NULL)
+	{
+		pfree(error_detail);
+		error_detail = NULL;
+	}
+	if (error_hint != NULL)
+	{
+		pfree(error_hint);
+		error_hint = NULL;
+	}
+	if (sqlstate != NULL && *sqlstate != '\0')
+		error_sqlstate = pstrdup(sqlstate);
+	if (detail != NULL)
+		error_detail = pstrdup(detail);
+	if (hint != NULL)
+		error_hint = pstrdup(hint);
+
+	MemoryContextSwitchTo(oldcxt);
 }
 
 /*
@@ -2409,7 +2567,10 @@ plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 
 	/* Propagate any uncaught PHP exception as a Postgres error */
 	{
-		char   *exmsg = plphp_pop_exception_message();
+		char   *sqlstate,
+			   *detail,
+			   *hint;
+		char   *exmsg = plphp_pop_exception(&sqlstate, &detail, &hint);
 
 		if (exmsg != NULL)
 		{
@@ -2417,7 +2578,7 @@ plphp_call_php_func(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 			zval_ptr_dtor(&params[0]);
 			zval_ptr_dtor(retval);
 			efree(retval);
-			elog(ERROR, "%s", exmsg);
+			plphp_report_php_error(exmsg, sqlstate, detail, hint);
 		}
 	}
 
@@ -2468,7 +2629,10 @@ plphp_call_php_trig(plphp_proc_desc *desc, FunctionCallInfo fcinfo,
 
 	/* Propagate any uncaught PHP exception as a Postgres error */
 	{
-		char   *exmsg = plphp_pop_exception_message();
+		char   *sqlstate,
+			   *detail,
+			   *hint;
+		char   *exmsg = plphp_pop_exception(&sqlstate, &detail, &hint);
 
 		if (exmsg != NULL)
 		{
@@ -2476,7 +2640,7 @@ plphp_call_php_trig(plphp_proc_desc *desc, FunctionCallInfo fcinfo,
 			zval_ptr_dtor(&funcname);
 			zval_ptr_dtor(retval);
 			efree(retval);
-			elog(ERROR, "%s", exmsg);
+			plphp_report_php_error(exmsg, sqlstate, detail, hint);
 		}
 	}
 
@@ -2508,6 +2672,7 @@ plphp_error_cb(int type, zend_string *error_filename,
 	const char *str = ZSTR_VAL(message);
 	const char *trace;
 	int		elevel;
+	bool	from_pgerror;
 
 	/*
 	 * PHP formats an uncaught exception as "...message... in <file>:<line>\n
@@ -2523,9 +2688,12 @@ plphp_error_cb(int type, zend_string *error_filename,
 	 * An uncaught PgError is just a database (or pg_raise/elog) error that no
 	 * PHP code chose to catch: report its original message, not PHP's
 	 * "Uncaught PgError: <msg> in <file>:<line>" wrapper (the line number is
-	 * re-appended below).
+	 * re-appended below).  Its stashed SQLSTATE/DETAIL/HINT (below) still
+	 * apply; for any other fatal they must not, so they are cleared.
 	 */
-	if (strncmp(str, "Uncaught PgError: ", 18) == 0)
+	from_pgerror = (strncmp(str, "Uncaught PgError: ", 18) == 0);
+
+	if (from_pgerror)
 	{
 		const char *in = NULL;
 		const char *p = str += 18;
@@ -2600,6 +2768,14 @@ plphp_error_cb(int type, zend_string *error_filename,
 	 */
 	if (elevel >= ERROR)
 	{
+		/*
+		 * The stashed SQLSTATE/DETAIL/HINT belong to a thrown PgError; for any
+		 * other fatal (a PHP error, a validation failure, ...) they are stale
+		 * and must not ride along, so drop them.
+		 */
+		if (!from_pgerror)
+			plphp_stash_error_fields(NULL, NULL, NULL);
+
 		if (error_lineno != 0 && !message_has_line_suffix(str))
 		{
 			char	msgline[1024];

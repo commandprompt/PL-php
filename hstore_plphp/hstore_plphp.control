@@ -1,0 +1,6 @@
+# hstore_plphp extension
+comment = 'transform between hstore and PL/php arrays'
+default_version = '1.0'
+module_pathname = '$libdir/hstore_plphp'
+relocatable = true
+requires = 'hstore, plphp'

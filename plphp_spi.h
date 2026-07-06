@@ -73,6 +73,8 @@ ZEND_FUNCTION(subtransaction);
 void php_SPIresult_destroy(zend_resource *rsrc);
 void php_SPIplan_destroy(zend_resource *rsrc);
 void plphp_throw_pg_error(ErrorData *edata);
+void plphp_stash_error_fields(const char *sqlstate, const char *detail,
+							  const char *hint);
 
 #endif /* PLPHP_SPI_H */
 
