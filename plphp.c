@@ -417,9 +417,11 @@ plphp_init_all(void)
 		plphp_init();
 
 	/*
-	 * Any other initialization that must be done each time a new
-	 * backend starts -- currently none.
+	 * Loaded PHP extensions can swap zend_error_cb behind our back at any
+	 * point; put ours back before running anything.  It is a plain pointer
+	 * assignment, so doing it on every call is free.
 	 */
+	zend_error_cb = plphp_error_cb;
 }
 
 /*
@@ -500,6 +502,7 @@ plphp_init(void)
 			INI_HARDCODED("log_errors", "0");
 			INI_HARDCODED("opcache.enable", "0");
 			INI_HARDCODED("opcache.enable_cli", "0");
+			INI_HARDCODED("xdebug.mode", "off");
 
 			/*
 			 * Set memory limit to ridiculously high value.  This helps the
@@ -528,6 +531,13 @@ plphp_init(void)
 			}
 
 			PG(during_request_startup) = true;
+
+			/*
+			 * Extensions loaded from the host's php.ini (xdebug, for one)
+			 * may have hooked zend_error_cb during module or request
+			 * startup; ours must be the one in place.
+			 */
+			zend_error_cb = plphp_error_cb;
 
 			/*
 			 * Register our SPI functions and the procedure cache now that the
