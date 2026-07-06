@@ -259,6 +259,30 @@ static bool is_valid_php_identifier(char *name);
 static char *plphp_pop_exception_message(void);
 
 /*
+ * Error context callbacks: every message raised while PL/php code runs gets
+ * a CONTEXT line naming the function (or code block), like the other PLs.
+ */
+static void
+plphp_exec_error_callback(void *arg)
+{
+	errcontext("PL/php function \"%s\"",
+			   arg != NULL ? (const char *) arg : "unknown");
+}
+
+static void
+plphp_inline_error_callback(void *arg)
+{
+	errcontext("PL/php anonymous code block");
+}
+
+static void
+plphp_compile_error_callback(void *arg)
+{
+	errcontext("compilation of PL/php function \"%s\"",
+			   arg != NULL ? (const char *) arg : "unknown");
+}
+
+/*
  * Each compiled function's descriptor and all its subsidiary data (name,
  * fmgr info records, ...) live in a private memory context, prodesc->fn_cxt,
  * created as a child of TopMemoryContext.  When the pg_proc tuple changes
@@ -742,6 +766,9 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 {
 	Datum		retval;
 	bool		nonatomic = false;
+	ErrorContextCallback plerrcontext;
+	char	   *fname;
+	JMP_BUF	   *save_bailout;
 
 	/* Initialize interpreter */
 	plphp_init_all();
@@ -753,6 +780,15 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 	 */
 	if (fcinfo->context && IsA(fcinfo->context, CallContext))
 		nonatomic = !((CallContext *) fcinfo->context)->atomic;
+
+	/* Messages raised below carry a CONTEXT line naming the function */
+	fname = get_func_name(fcinfo->flinfo->fn_oid);
+	plerrcontext.callback = plphp_exec_error_callback;
+	plerrcontext.arg = fname;
+	plerrcontext.previous = error_context_stack;
+	error_context_stack = &plerrcontext;
+
+	save_bailout = EG(bailout);
 
 	PG_TRY();
 	{
@@ -820,9 +856,20 @@ plphp_call_handler(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
+		/*
+		 * The error may have longjmp'ed out of the zend_try block above,
+		 * skipping zend_end_try(): EG(bailout) would then still point into
+		 * this (now dying) stack frame, and the next zend_bailout() would
+		 * jump into garbage.  Put the caller's bailout environment back.
+		 */
+		EG(bailout) = save_bailout;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	error_context_stack = plerrcontext.previous;
+	if (fname)
+		pfree(fname);
 
 	return retval;
 }
@@ -842,9 +889,19 @@ plphp_inline_handler(PG_FUNCTION_ARGS)
 	char	   *complete_source;
 	zval		funcname_zv;
 	zval		retval;
+	ErrorContextCallback plerrcontext;
+	JMP_BUF	   *save_bailout;
 
 	/* Initialize interpreter */
 	plphp_init_all();
+
+	/* Messages raised below carry a CONTEXT line */
+	plerrcontext.callback = plphp_inline_error_callback;
+	plerrcontext.arg = NULL;
+	plerrcontext.previous = error_context_stack;
+	error_context_stack = &plerrcontext;
+
+	save_bailout = EG(bailout);
 
 	PG_TRY();
 	{
@@ -922,9 +979,13 @@ plphp_inline_handler(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
+		/* see plphp_call_handler about the bailout environment */
+		EG(bailout) = save_bailout;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	error_context_stack = plerrcontext.previous;
 
 	PG_RETURN_VOID();
 }
@@ -946,9 +1007,20 @@ plphp_validator(PG_FUNCTION_ARGS)
 	char		   *tmpsrc = NULL,
 				   *prosrc;
 	Datum			prosrcdatum;
+	ErrorContextCallback plerrcontext;
+	JMP_BUF		   *save_bailout;
 
 	/* Initialize interpreter */
 	plphp_init_all();
+
+	/* Messages raised below carry a CONTEXT line naming the function */
+	plerrcontext.callback = plphp_compile_error_callback;
+	plerrcontext.arg = funcname;
+	plerrcontext.previous = error_context_stack;
+	error_context_stack = &plerrcontext;
+	funcname[0] = '\0';
+
+	save_bailout = EG(bailout);
 
 	PG_TRY();
 	{
@@ -1041,15 +1113,19 @@ plphp_validator(PG_FUNCTION_ARGS)
 			return 0;
 		}
 		zend_end_try();
-
-		/* The result of a validator is ignored */
-		PG_RETURN_VOID();
 	}
 	PG_CATCH();
 	{
+		/* see plphp_call_handler about the bailout environment */
+		EG(bailout) = save_bailout;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	error_context_stack = plerrcontext.previous;
+
+	/* The result of a validator is ignored */
+	PG_RETURN_VOID();
 }
 
 /*
@@ -2212,6 +2288,21 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
  * through zend_error_cb, so we must check for them explicitly after invoking
  * user code and translate them into Postgres errors.
  */
+/* Does the string already end in " at line <digits>"? */
+static bool
+message_has_line_suffix(const char *msg)
+{
+	const char *p = strrchr(msg, ' ');
+
+	if (p == NULL || !isdigit((unsigned char) p[1]))
+		return false;
+	for (p++; *p; p++)
+		if (!isdigit((unsigned char) *p))
+			return false;
+	p = strstr(msg, " at line ");
+	return p != NULL;
+}
+
 static char *
 plphp_pop_exception_message(void)
 {
@@ -2238,7 +2329,13 @@ plphp_pop_exception_message(void)
 			zval   *zline = zend_read_property(ex->ce, ex, "line",
 											   sizeof("line") - 1, 1, &rvl);
 
-			if (zline != NULL && Z_TYPE_P(zline) == IS_LONG)
+			/*
+			 * Skip the suffix when the message already ends in one: an
+			 * error crossing nested PL/php calls has it from the inner
+			 * function, and repeating it just adds noise.
+			 */
+			if (zline != NULL && Z_TYPE_P(zline) == IS_LONG &&
+				!message_has_line_suffix(Z_STRVAL_P(zmsg)))
 				msg = psprintf("%s at line %ld", Z_STRVAL_P(zmsg),
 							   (long) Z_LVAL_P(zline));
 			else
@@ -2494,7 +2591,7 @@ plphp_error_cb(int type, zend_string *error_filename,
 	 */
 	if (elevel >= ERROR)
 	{
-		if (error_lineno != 0)
+		if (error_lineno != 0 && !message_has_line_suffix(str))
 		{
 			char	msgline[1024];
 			snprintf(msgline, sizeof(msgline), "%s at line %u", str, error_lineno);
