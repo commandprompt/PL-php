@@ -32,5 +32,6 @@ CREATE EVENT TRIGGER guard ON ddl_command_start WHEN TAG IN ('CREATE TABLE')
     EXECUTE FUNCTION no_create();
 CREATE TABLE blocked (x int);
 ERROR:  no new tables allowed at line 2
+CONTEXT:  PL/php function "no_create"
 DROP EVENT TRIGGER guard;
 DROP FUNCTION no_create();

@@ -89,6 +89,7 @@ CREATE FUNCTION err_uncaught() RETURNS void LANGUAGE plphp AS $$
 $$;
 SELECT err_uncaught();
 ERROR:  division by zero at line 2
+CONTEXT:  PL/php function "err_uncaught"
 -- Errors surfacing mid-iteration from a cursor are catchable too
 CREATE FUNCTION err_cursor() RETURNS text LANGUAGE plphp AS $$
 	$c = spi_query("select 1/(g-2) as x from generate_series(1,3) g");
@@ -108,4 +109,38 @@ SELECT err_cursor();
  -1 then division by zero
 (1 row)
 
+-- An error crossing nested PL/php calls: propagates cleanly (this used to
+-- crash the backend via a stale Zend bailout environment), is catchable in
+-- the outer function, and the session stays healthy
+CREATE FUNCTION err_inner() RETURNS int LANGUAGE plphp AS $$
+	spi_exec("select 1/0");
+$$;
+CREATE FUNCTION err_outer() RETURNS int LANGUAGE plphp AS $$
+	$r = spi_exec("select err_inner() as v");
+	return 1;
+$$;
+SELECT err_outer();
+ERROR:  division by zero at line 2
+CONTEXT:  PL/php function "err_outer"
+SELECT 1 AS session_alive;
+ session_alive 
+---------------
+             1
+(1 row)
+
+CREATE FUNCTION err_outer_catch() RETURNS text LANGUAGE plphp AS $$
+	try {
+		spi_exec("select err_inner()");
+	} catch (PgError $e) {
+		return "caught nested: " . $e->getMessage();
+	}
+	return "not reached";
+$$;
+SELECT err_outer_catch();
+              err_outer_catch              
+-------------------------------------------
+ caught nested: division by zero at line 2
+(1 row)
+
+DROP FUNCTION err_inner(), err_outer(), err_outer_catch();
 DROP TABLE errt;

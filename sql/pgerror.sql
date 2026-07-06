@@ -83,4 +83,27 @@ CREATE FUNCTION err_cursor() RETURNS text LANGUAGE plphp AS $$
 $$;
 SELECT err_cursor();
 
+-- An error crossing nested PL/php calls: propagates cleanly (this used to
+-- crash the backend via a stale Zend bailout environment), is catchable in
+-- the outer function, and the session stays healthy
+CREATE FUNCTION err_inner() RETURNS int LANGUAGE plphp AS $$
+	spi_exec("select 1/0");
+$$;
+CREATE FUNCTION err_outer() RETURNS int LANGUAGE plphp AS $$
+	$r = spi_exec("select err_inner() as v");
+	return 1;
+$$;
+SELECT err_outer();
+SELECT 1 AS session_alive;
+CREATE FUNCTION err_outer_catch() RETURNS text LANGUAGE plphp AS $$
+	try {
+		spi_exec("select err_inner()");
+	} catch (PgError $e) {
+		return "caught nested: " . $e->getMessage();
+	}
+	return "not reached";
+$$;
+SELECT err_outer_catch();
+
+DROP FUNCTION err_inner(), err_outer(), err_outer_catch();
 DROP TABLE errt;

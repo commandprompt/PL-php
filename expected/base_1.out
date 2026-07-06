@@ -50,16 +50,20 @@ LANGUAGE plphp AS $$
 $$;
 SELECT test_a_bogus_array();
 ERROR:  function declared to return array must return an array
+CONTEXT:  PL/php function "test_a_bogus_array"
 SELECT * FROM test_a_bogus_array();
 ERROR:  function declared to return array must return an array
+CONTEXT:  PL/php function "test_a_bogus_array"
 CREATE FUNCTION test_a_bogus_int() RETURNS integer
 LANGUAGE plphp AS $$
 	return array(1);
 $$;
 SELECT test_a_bogus_int();
 ERROR:  this plphp function cannot return arrays
+CONTEXT:  PL/php function "test_a_bogus_int"
 SELECT * FROM test_a_bogus_int();
 ERROR:  this plphp function cannot return arrays
+CONTEXT:  PL/php function "test_a_bogus_int"
 CREATE FUNCTION test_ndim_array(int, int) RETURNS int[]
 LANGUAGE plphp AS $$
     if (!function_exists('bar')) {
@@ -112,6 +116,7 @@ SELECT test_ndim_array(6, 1);
 
 SELECT test_ndim_array(7, 1);
 ERROR:  number of array dimensions (7) exceeds the maximum allowed (6)
+CONTEXT:  PL/php function "test_ndim_array"
 CREATE FUNCTION php_max (integer, integer) RETURNS integer
 STRICT LANGUAGE plphp AS $$
 	if ($args[0] > $args[1]) {
@@ -290,14 +295,17 @@ create function foo() returns record language plphp as $$
 $$;
 select foo();
 ERROR:  function declared to return tuple must return an array
+CONTEXT:  PL/php function "foo"
 select * FROM foo() as (a int);
 ERROR:  function declared to return tuple must return an array
+CONTEXT:  PL/php function "foo"
 create or replace function foo(anyelement) returns anyarray
 language plphp as $$
 	return 1;
 $$;
 select foo(1);
 ERROR:  function declared to return array must return an array
+CONTEXT:  PL/php function "foo"
 -- test recursive functions
 create function php_fib(int) returns int language plphp as $$
   if ($args[0] <= 1) { return 1; }

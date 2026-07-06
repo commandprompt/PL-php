@@ -16,6 +16,7 @@ NOTICE:  plphp: DO via SPI: 42
 -- A syntactically invalid DO block is rejected
 DO $$ this is not php $$ LANGUAGE plphp;
 ERROR:  unable to compile inline code block: syntax error, unexpected identifier "is"
+CONTEXT:  PL/php anonymous code block
 -- Prepared statements: prepare / exec_prepared / freeplan
 CREATE FUNCTION prep_test(int) RETURNS int LANGUAGE plphp AS $$
     $plan = spi_prepare('select $1 * 10 as v', 'int4');
@@ -111,6 +112,7 @@ CREATE FUNCTION elog_error() RETURNS void LANGUAGE plphp AS $$
 $$;
 SELECT elog_error();
 ERROR:  boom from elog at line 2
+CONTEXT:  PL/php function "elog_error"
 -- A prepared statement with a NULL argument
 CREATE FUNCTION prep_null() RETURNS text LANGUAGE plphp AS $$
     $plan = spi_prepare('select $1::text as v', 'text');
@@ -155,3 +157,4 @@ CREATE FUNCTION elog_bad() RETURNS void LANGUAGE plphp AS $$
 $$;
 SELECT elog_bad();
 ERROR:  elog: unrecognized level "BOGUS" at line 2
+CONTEXT:  PL/php function "elog_bad"

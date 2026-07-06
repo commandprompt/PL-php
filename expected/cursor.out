@@ -130,6 +130,7 @@ select test_cursor_error(1);
 
 select test_cursor_error(0);
 ERROR:  division by zero at line 2
+CONTEXT:  PL/php function "test_cursor_error"
 select test_cursor_error(1);
  test_cursor_error 
 -------------------

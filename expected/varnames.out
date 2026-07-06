@@ -93,4 +93,5 @@ CREATE FUNCTION vany(VARIADIC "any") RETURNS int LANGUAGE plphp AS $$
 $$;
 SELECT vany(1, 'x'::text, true);
 ERROR:  PL/php functions cannot accept VARIADIC "any" arguments
+CONTEXT:  PL/php function "vany"
 DROP FUNCTION vsum(int[]), vjoin(text, text[]), vany("any");

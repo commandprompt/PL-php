@@ -106,6 +106,7 @@ language plphp as $$
 $$;
 select * from retset5(5, 2);
 ERROR:  cannot use return_next in functions not declared to return a set
+CONTEXT:  PL/php function "retset5"
 -- Try to return setof array
 create or replace function retset6(int, int) returns setof int[]
 language plphp as $$
