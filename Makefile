@@ -35,7 +35,10 @@ PG_CPPFLAGS = $(PHP_INCLUDES)
 # (libz, libsodium, ...) are resolved at load time via libphp's NEEDED entries,
 # so we do not add "php-config --libs" here (that would require their -dev
 # symlinks at build time).
-SHLIB_LINK = -L$(PHP_LIBDIR) -l$(PHP_LIBNAME) $(shell $(PHP_CONFIG) --ldflags)
+# Extra flags hook, e.g. ASAN_FLAGS="-fsanitize=address" for sanitizer builds
+ASAN_FLAGS ?=
+PG_CFLAGS += $(ASAN_FLAGS)
+SHLIB_LINK = $(ASAN_FLAGS) -L$(PHP_LIBDIR) -l$(PHP_LIBNAME) $(shell $(PHP_CONFIG) --ldflags)
 
 # Regression tests.  "init" installs the extension; keep it first.
 REGRESS = init base shared trigger spi raise cargs pseudo srf out varnames validator compat txn evttrig subxact modules oninit cursor arrays coverage cookbook pgerror
