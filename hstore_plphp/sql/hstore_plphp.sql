@@ -81,4 +81,71 @@ CREATE FUNCTION ht_untransformed(hstore) RETURNS text LANGUAGE plphp AS $$
 $$;
 SELECT ht_untransformed('a=>1'::hstore);
 
+--
+-- The transform reaches nested contexts, in both directions: trigger rows,
+-- composite arguments and results, and set-returning results.
+--
+
+-- Trigger: $_TD['new']['<hstore col>'] is a PHP array, and 'MODIFY' takes one
+-- back.
+CREATE TABLE ht_items (id int, attrs hstore);
+CREATE FUNCTION ht_normalize() RETURNS trigger
+TRANSFORM FOR TYPE hstore LANGUAGE plphp AS $$
+    $a = $_TD['new']['attrs'];
+    elog('NOTICE', 'attrs is a ' . gettype($a));
+    $out = array('checked' => 'yes');
+    foreach ($a as $k => $v) $out[strtolower($k)] = $v;
+    $_TD['new']['attrs'] = $out;
+    return 'MODIFY';
+$$;
+CREATE TRIGGER ht_items_norm BEFORE INSERT ON ht_items
+    FOR EACH ROW EXECUTE PROCEDURE ht_normalize();
+INSERT INTO ht_items VALUES (1, 'Color=>red, SIZE=>xl');
+SELECT id, attrs FROM ht_items;
+DROP TABLE ht_items;
+
+-- Composite argument with an hstore field arrives as a PHP array.
+CREATE TYPE ht_rec AS (id int, meta hstore);
+CREATE FUNCTION ht_field(ht_rec) RETURNS text
+TRANSFORM FOR TYPE hstore LANGUAGE plphp AS $$
+    $m = $args[0]['meta'];
+    return is_array($m) ? ($m['k'] ?? '?') : "not-array";
+$$;
+SELECT ht_field(ROW(1, 'k=>v')::ht_rec);
+
+-- Composite result with an hstore field is built from a PHP array.
+CREATE FUNCTION ht_make(int) RETURNS ht_rec
+TRANSFORM FOR TYPE hstore LANGUAGE plphp AS $$
+    return array('id' => $args[0], 'meta' => array('n' => $args[0], 'ok' => 'y'));
+$$;
+SELECT * FROM ht_make(7);
+
+-- SETOF hstore via return_next: each row is a PHP array.
+CREATE FUNCTION ht_shatter(hstore) RETURNS SETOF hstore
+TRANSFORM FOR TYPE hstore LANGUAGE plphp AS $$
+    $h = $args[0];
+    ksort($h);
+    foreach ($h as $k => $v) return_next(array($k => $v));
+    return;
+$$;
+SELECT * FROM ht_shatter('b=>2, a=>1');
+
+-- RETURNS TABLE with an hstore column.
+CREATE FUNCTION ht_table(int) RETURNS TABLE(n int, tags hstore)
+TRANSFORM FOR TYPE hstore LANGUAGE plphp AS $$
+    for ($i = 1; $i <= $args[0]; $i++) { $n = $i; $tags = array('sq' => $i * $i); return_next(); }
+    return;
+$$;
+SELECT * FROM ht_table(3);
+
+-- Rows read back from SPI are NOT transformed (they cross as text), matching
+-- the top-level "no TRANSFORM" behavior.
+CREATE FUNCTION ht_via_spi() RETURNS text
+TRANSFORM FOR TYPE hstore LANGUAGE plphp AS $$
+    $r = spi_exec("select 'x=>1'::hstore as h");
+    $row = spi_fetch_row($r);
+    return gettype($row['h']);
+$$;
+SELECT ht_via_spi();
+
 DROP EXTENSION hstore_plphp CASCADE;

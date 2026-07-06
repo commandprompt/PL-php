@@ -89,5 +89,32 @@ LANGUAGE plphp TRANSFORM FOR TYPE jsonb AS $$
 $$;
 SELECT badret();
 
+-- The transform reaches nested contexts (as for hstore): a trigger sees a
+-- jsonb column as a PHP value and can 'MODIFY' it, and a SETOF jsonb function
+-- emits native values row by row.
+CREATE TABLE jb_events (id int, payload jsonb);
+CREATE FUNCTION jb_tag() RETURNS trigger
+LANGUAGE plphp TRANSFORM FOR TYPE jsonb AS $$
+	$p = $_TD['new']['payload'];
+	$p['seen'] = true;
+	$p['n'] = ($p['n'] ?? 0) + 1;
+	$_TD['new']['payload'] = $p;
+	return 'MODIFY';
+$$;
+CREATE TRIGGER jb_tag_t BEFORE INSERT ON jb_events
+	FOR EACH ROW EXECUTE PROCEDURE jb_tag();
+INSERT INTO jb_events VALUES (1, '{"n": 4}');
+SELECT id, payload FROM jb_events;
+DROP TABLE jb_events;
+
+CREATE FUNCTION jb_series(int) RETURNS SETOF jsonb
+LANGUAGE plphp TRANSFORM FOR TYPE jsonb AS $$
+	for ($i = 1; $i <= $args[0]; $i++)
+		return_next(array('i' => $i, 'sq' => $i * $i));
+	return;
+$$;
+SELECT * FROM jb_series(3);
+
 DROP FUNCTION roundtrip(jsonb), typeinfo(jsonb), makedoc(), makenum(),
-              redact(jsonb, text), astext(jsonb), badret();
+              redact(jsonb, text), astext(jsonb), badret(),
+              jb_tag(), jb_series(int);

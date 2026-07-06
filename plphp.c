@@ -188,6 +188,8 @@ typedef struct plphp_proc_desc
 	Oid			arg_elemtype[FUNC_MAX_ARGS];	/* element type, or 0 */
 	Oid			arg_transform[FUNC_MAX_ARGS];	/* FromSQL transform fn, or 0 */
 	Oid			ret_transform;					/* ToSQL transform fn, or 0 */
+	Oid			lang_oid;		/* prolang, for per-column transform lookup */
+	List	   *trftypes;		/* declared TRANSFORM FOR TYPE types, or NIL */
 	char		arg_typtype[FUNC_MAX_ARGS];
 	char		arg_argmode[FUNC_MAX_ARGS];
 	TupleDesc	args_out_tupdesc;
@@ -1183,12 +1185,13 @@ plphp_get_function_tupdesc(Oid result_type, Node *rsinfo)
  * Build the $_TD array for the trigger function.
  */
 static zval *
-plphp_trig_build_args(FunctionCallInfo fcinfo)
+plphp_trig_build_args(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 {
 	TriggerData	   *tdata;
 	TupleDesc		tupdesc;
 	zval		   *retval;
 	int				i;
+	plphp_trans_ctx	tctx = {desc->lang_oid, desc->trftypes};
 
 	retval = (zval *) emalloc(sizeof(zval));
 	array_init(retval);
@@ -1221,7 +1224,7 @@ plphp_trig_build_args(FunctionCallInfo fcinfo)
 		{
 			zval	   *hashref;
 
-			hashref = plphp_build_tuple_argument(tdata->tg_trigtuple, tupdesc);
+			hashref = plphp_build_tuple_argument(tdata->tg_trigtuple, tupdesc, &tctx);
 			add_assoc_zval(retval, "new", hashref);
 			efree(hashref);
 		}
@@ -1229,7 +1232,7 @@ plphp_trig_build_args(FunctionCallInfo fcinfo)
 		{
 			zval	   *hashref;
 
-			hashref = plphp_build_tuple_argument(tdata->tg_trigtuple, tupdesc);
+			hashref = plphp_build_tuple_argument(tdata->tg_trigtuple, tupdesc, &tctx);
 			add_assoc_zval(retval, "old", hashref);
 			efree(hashref);
 		}
@@ -1237,11 +1240,11 @@ plphp_trig_build_args(FunctionCallInfo fcinfo)
 		{
 			zval	   *hashref;
 
-			hashref = plphp_build_tuple_argument(tdata->tg_newtuple, tupdesc);
+			hashref = plphp_build_tuple_argument(tdata->tg_newtuple, tupdesc, &tctx);
 			add_assoc_zval(retval, "new", hashref);
 			efree(hashref);
 
-			hashref = plphp_build_tuple_argument(tdata->tg_trigtuple, tupdesc);
+			hashref = plphp_build_tuple_argument(tdata->tg_trigtuple, tupdesc, &tctx);
 			add_assoc_zval(retval, "old", hashref);
 			efree(hashref);
 		}
@@ -1302,7 +1305,7 @@ plphp_trigger_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 
 	REPORT_PHP_MEMUSAGE("going to build the trigger arg");
 
-	zTrigData = plphp_trig_build_args(fcinfo);
+	zTrigData = plphp_trig_build_args(fcinfo, desc);
 
 	REPORT_PHP_MEMUSAGE("going to call the trigger function");
 
@@ -1350,7 +1353,8 @@ plphp_trigger_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 					if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event) ||
 						TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
 						retval = PointerGetDatum(plphp_modify_tuple(zTrigData,
-																	trigdata));
+									trigdata,
+									&(plphp_trans_ctx){desc->lang_oid, desc->trftypes}));
 					else if (TRIGGER_FIRED_BY_DELETE(trigdata->tg_event))
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
@@ -1577,7 +1581,8 @@ plphp_func_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 					if (!td)
 						elog(ERROR, "no TupleDesc info available");
 
-					tup = plphp_htup_from_zval(phpret, td);
+					tup = plphp_htup_from_zval(phpret, td,
+								&(plphp_trans_ctx){desc->lang_oid, desc->trftypes});
 					retval = HeapTupleGetDatum(tup);
 					ReleaseTupleDesc(td);
 				}
@@ -1672,6 +1677,10 @@ plphp_srf_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 	current_tupledesc = CreateTupleDescCopy(tupdesc);
 	current_attinmeta = TupleDescGetAttInMetadata(current_tupledesc);
 
+	/* Transform context, so return_next rows honor declared transforms */
+	current_trans_ctx.lang_oid = desc->lang_oid;
+	current_trans_ctx.trftypes = desc->trftypes;
+
 	/*
 	 * Call the PHP function.  The user code normally calls return_next,
 	 * which creates and populates the tuplestore.
@@ -1696,7 +1705,8 @@ plphp_srf_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 			HeapTuple	tup;
 
 			tup = plphp_srf_htup_from_zval(row, current_attinmeta,
-										   current_memcxt);
+										   current_memcxt,
+										   &(plphp_trans_ctx){desc->lang_oid, desc->trftypes});
 			tuplestore_puttuple(current_tuplestore, tup);
 			heap_freetuple(tup);
 		}
@@ -1725,6 +1735,8 @@ plphp_srf_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 	current_memcxt = NULL;
 	current_tupledesc = NULL;
 	current_attinmeta = NULL;
+	current_trans_ctx.lang_oid = InvalidOid;
+	current_trans_ctx.trftypes = NIL;
 
 	MemoryContextSwitchTo(oldcxt);
 
@@ -1847,6 +1859,31 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 		langStruct = (Form_pg_language) GETSTRUCT(langTup);
 		prodesc->trusted = langStruct->lanpltrusted;
 		ReleaseSysCache(langTup);
+
+		/*
+		 * TRANSFORM FOR TYPE support: remember the function's declared
+		 * transform types (copied into the descriptor's own context) so values
+		 * of those types can be converted by their transform functions -- not
+		 * only as top-level arguments/results, but also as columns inside
+		 * trigger rows, composites, and set-returning results.  Fetched for
+		 * every function, triggers included.
+		 */
+		prodesc->lang_oid = procStruct->prolang;
+		{
+			Datum		protrftypes_datum;
+			bool		trfisnull;
+
+			protrftypes_datum = SysCacheGetAttr(PROCOID, procTup,
+												Anum_pg_proc_protrftypes,
+												&trfisnull);
+			if (!trfisnull)
+			{
+				MemoryContext oldcxt = MemoryContextSwitchTo(fn_cxt);
+
+				prodesc->trftypes = oid_array_to_list(protrftypes_datum);
+				MemoryContextSwitchTo(oldcxt);
+			}
+		}
 
 		/*
 		 * Get the required information for input conversion of the return
@@ -1998,29 +2035,16 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 				aliases = palloc((NAMEDATALEN + 32) * prodesc->n_total_args);
 
 			/*
-			 * TRANSFORM FOR TYPE support: fetch the function's declared
-			 * transform types so arguments/results of those types can be
-			 * converted by their transform functions (e.g. jsonb_plphp).
+			 * Resolve the top-level argument/result transforms from the
+			 * declared transform types fetched above.
 			 */
-			{
-				Datum		protrftypes_datum;
-				bool		trfisnull;
-				List	   *trftypes = NIL;
-
-				protrftypes_datum = SysCacheGetAttr(PROCOID, procTup,
-													Anum_pg_proc_protrftypes,
-													&trfisnull);
-				if (!trfisnull)
-					trftypes = oid_array_to_list(protrftypes_datum);
-
-				prodesc->ret_transform =
-					get_transform_tosql(procStruct->prorettype,
-										procStruct->prolang, trftypes);
-				for (i = 0; i < prodesc->n_total_args; i++)
-					prodesc->arg_transform[i] =
-						get_transform_fromsql(argtypes[i],
-											  procStruct->prolang, trftypes);
-			}
+			prodesc->ret_transform =
+				get_transform_tosql(procStruct->prorettype,
+									procStruct->prolang, prodesc->trftypes);
+			for (i = 0; i < prodesc->n_total_args; i++)
+				prodesc->arg_transform[i] =
+					get_transform_fromsql(argtypes[i],
+										  procStruct->prolang, prodesc->trftypes);
 
 			/* Main argument processing loop. */
 			for (i = 0; i < prodesc->n_total_args; i++)
@@ -2224,6 +2248,7 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 {
 	zval	   *retval;
 	int			i,j;
+	plphp_trans_ctx	tctx = {desc->lang_oid, desc->trftypes};
 
 	retval = (zval *) emalloc(sizeof(zval));
 	array_init(retval);
@@ -2284,7 +2309,7 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 				tupdesc = lookup_rowtype_tupdesc(tupType, tupTypmod);
 
 				/* Build the PHP hash */
-				hashref = plphp_build_tuple_argument(&tmptup, tupdesc);
+				hashref = plphp_build_tuple_argument(&tmptup, tupdesc, &tctx);
 				add_next_index_zval(retval, hashref);
 				efree(hashref);
 				/* Finally release the acquired tupledesc */

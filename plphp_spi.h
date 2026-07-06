@@ -19,6 +19,9 @@
 
 #include "Zend/zend_API.h"
 
+/* for plphp_trans_ctx (used by current_trans_ctx below) */
+#include "plphp_io.h"
+
 /* resource type Id for SPIresult */
 extern int SPIres_rtype;
 /* resource type Id for a prepared SPI plan */
@@ -34,6 +37,7 @@ extern TupleDesc current_tupledesc;
 extern AttInMetadata *current_attinmeta;
 extern MemoryContext current_memcxt;
 extern Tuplestorestate *current_tuplestore;
+extern plphp_trans_ctx current_trans_ctx;
 extern HashTable *saved_symbol_table;
 
 /*

@@ -213,6 +213,8 @@ FunctionCallInfo current_fcinfo = NULL;
 TupleDesc current_tupledesc = NULL;
 AttInMetadata *current_attinmeta = NULL;
 MemoryContext current_memcxt = NULL;
+/* Transform context of the SRF currently emitting rows via return_next. */
+plphp_trans_ctx current_trans_ctx = {InvalidOid, NIL};
 Tuplestorestate *current_tuplestore = NULL;
 
 
@@ -597,7 +599,8 @@ ZEND_FUNCTION(return_next)
 	oldcxt = MemoryContextSwitchTo(rsi->econtext->ecxt_per_query_memory);
 
 	/* Form the tuple */
-	tup = plphp_srf_htup_from_zval(param, current_attinmeta, current_memcxt);
+	tup = plphp_srf_htup_from_zval(param, current_attinmeta, current_memcxt,
+								   &current_trans_ctx);
 
 	/* First call?  Create the tuplestore. */
 	if (!current_tuplestore)
