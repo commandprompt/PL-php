@@ -156,7 +156,7 @@ LANGUAGE plphp STRICT AS $$
     $fh = fopen($args[0], "r");
     if ($fh === false)
         pg_raise('error', "cannot open {$args[0]}");
-    while (($rec = fgetcsv($fh)) !== false)
+    while (($rec = fgetcsv($fh, null, ",", "\"", "\\")) !== false)
         return_next($rec);
     fclose($fh);
     return;

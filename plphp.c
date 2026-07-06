@@ -76,6 +76,10 @@
 /* PHP stuff */
 #include "php.h"
 
+#if PHP_VERSION_ID < 80100
+#error "PL/php requires PHP 8.1 or newer (zend_error_cb signature)"
+#endif
+
 #include "php_variables.h"
 #include "php_globals.h"
 #include "zend_hash.h"
@@ -450,8 +454,14 @@ plphp_init(void)
 			plphp_sapi_module.phpinfo_as_text = 1;
 			sapi_startup(&plphp_sapi_module);
 
+#if PHP_VERSION_ID >= 80200
 			if (php_module_startup(&plphp_sapi_module, NULL) == FAILURE)
 				elog(ERROR, "php_module_startup call failed");
+#else
+			/* PHP 8.1 still took an additional-modules count */
+			if (php_module_startup(&plphp_sapi_module, NULL, 0) == FAILURE)
+				elog(ERROR, "php_module_startup call failed");
+#endif
 
 			/* php_module_startup changed it, so put it back */
 			zend_error_cb = plphp_error_cb;

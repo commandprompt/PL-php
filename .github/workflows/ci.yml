@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    name: PG ${{ matrix.pg }} / PHP ${{ matrix.php }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every supported PostgreSQL against the distro PHP...
+        pg: [11, 12, 13, 14, 15, 16, 17, 18]
+        php: ["8.3"]
+        # ...plus the other supported PHP versions against the newest PG.
+        include:
+          - { pg: 18, php: "8.1" }
+          - { pg: 18, php: "8.2" }
+          - { pg: 18, php: "8.4" }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add the PGDG apt repository
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+
+      - name: Add the ondrej/php PPA (non-distro PHP versions)
+        if: matrix.php != '8.3'
+        run: sudo add-apt-repository -y ppa:ondrej/php
+
+      - name: Install PostgreSQL ${{ matrix.pg }} and PHP ${{ matrix.php }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} \
+            php${{ matrix.php }}-dev libphp${{ matrix.php }}-embed php${{ matrix.php }}-xml
+          php-config${{ matrix.php }} --php-sapis | grep -q embed
+
+      - name: Build and install PL/php
+        run: |
+          make PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config \
+               PHP_CONFIG=php-config${{ matrix.php }}
+          sudo make PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config \
+               PHP_CONFIG=php-config${{ matrix.php }} install
+
+      - name: Build and install jsonb_plphp
+        run: |
+          make -C jsonb_plphp \
+               PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config \
+               PHP_CONFIG=php-config${{ matrix.php }}
+          sudo make -C jsonb_plphp \
+               PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config \
+               PHP_CONFIG=php-config${{ matrix.php }} install
+
+      - name: Start the cluster
+        run: |
+          sudo pg_ctlcluster ${{ matrix.pg }} main start
+          pg_lsclusters
+
+      - name: Run the regression tests
+        run: |
+          port=$(pg_lsclusters | awk '$1 == "${{ matrix.pg }}" && $2 == "main" { print $3 }')
+          chmod -R a+rwX .
+          sudo -u postgres env PGPORT=$port \
+            make PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config installcheck
+
+      - name: Run the jsonb_plphp regression tests
+        run: |
+          port=$(pg_lsclusters | awk '$1 == "${{ matrix.pg }}" && $2 == "main" { print $3 }')
+          sudo -u postgres env PGPORT=$port \
+            make -C jsonb_plphp \
+                 PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config installcheck
+
+      - name: Show regression diffs on failure
+        if: failure()
+        run: |
+          cat regression.diffs 2>/dev/null || true
+          cat jsonb_plphp/regression.diffs 2>/dev/null || true
