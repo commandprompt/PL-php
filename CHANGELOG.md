@@ -31,6 +31,22 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   environment pointing into a dead stack frame; the next uncaught error then
   jumped into garbage. Nested regression cases added.
 
+## [Unreleased]
+
+### Added
+
+- **Composite values convert structurally.** Composite-typed columns in rows,
+  fields of composite arguments, and composites inside arrays now arrive as
+  associative PHP arrays (recursively, arrays included), and PHP arrays
+  convert back to composite values on return, in `return_next` rows, and
+  through trigger `MODIFY` — completing the structural-conversion work begun
+  with array columns in 2.3.0.
+- `anycompatible` and `anycompatiblearray` are accepted as polymorphic
+  argument/return types on PostgreSQL 13 and newer.
+- **ASAN in CI.** A workflow job builds with AddressSanitizer and runs the
+  suite against a `libasan`-preloaded server, catching memory-safety bugs
+  mechanically (new `ASAN_FLAGS` hook in the Makefiles).
+
 ## [2.3.0] — 2026-07-06
 
 ### Added

@@ -18,9 +18,16 @@
 #include "funcapi.h"
 #include "lib/stringinfo.h"
 #include "utils/lsyscache.h"
+#include "utils/typcache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/memutils.h"
+
+static zval *plphp_array_element_to_zval(const char *str, size_t len,
+										 Oid elemtype, bool quoted);
+static const char *plphp_parse_record_body(const char *p, TupleDesc tupdesc,
+										   zval *row);
+static char *plphp_build_record_literal(zval *val, TupleDesc tupdesc);
 
 /*
  * plphp_add_row_value
@@ -31,12 +38,23 @@
 static void
 plphp_add_row_value(zval *row, char *attname, Oid atttypid, char *value)
 {
-	if (OidIsValid(get_element_type(atttypid)))
+	Oid			elemtype = get_element_type(atttypid);
+
+	if (OidIsValid(elemtype))
 	{
-		zval	   *arr = plphp_convert_from_pg_array(value);
+		zval	   *arr = plphp_convert_from_pg_array(value, elemtype);
 
 		add_assoc_zval(row, attname, arr);
 		efree(arr);
+	}
+	else if (get_typtype(atttypid) == TYPTYPE_COMPOSITE)
+	{
+		TupleDesc	td = lookup_rowtype_tupdesc(atttypid, -1);
+		zval	   *rec = plphp_convert_from_pg_record(value, td);
+
+		ReleaseTupleDesc(td);
+		add_assoc_zval(row, attname, rec);
+		efree(rec);
 	}
 	else
 		add_assoc_string(row, attname, value);
@@ -109,7 +127,8 @@ plphp_htup_from_zval(zval *val, TupleDesc tupdesc)
 		char   *key = SPI_fname(tupdesc, i + 1);
 		zval   *scalarval = plphp_array_get_elem(val, key);
 
-		values[i] = plphp_zval_get_cstring(scalarval, true, true);
+		values[i] = plphp_zval_get_typed_cstring(scalarval,
+									TupleDescAttr(tupdesc, i)->atttypid);
 		/*
 		 * Reset the flag if even one of the keys actually exists,
 		 * even if it is NULL.
@@ -131,7 +150,9 @@ plphp_htup_from_zval(zval *val, TupleDesc tupdesc)
 		{
 			if (i >= tupdesc->natts)
 				break;
-			values[i++] = plphp_zval_get_cstring(element, true, true);
+			values[i] = plphp_zval_get_typed_cstring(element,
+									TupleDescAttr(tupdesc, i)->atttypid);
+			i++;
 		}
 		ZEND_HASH_FOREACH_END();
 	}
@@ -219,7 +240,9 @@ plphp_srf_htup_from_zval(zval *val, AttInMetadata *attinmeta,
 					break;
 				}
 
-				values[i++] = plphp_zval_get_cstring(element, true, true);
+				values[i] = plphp_zval_get_typed_cstring(element,
+						TupleDescAttr(attinmeta->tupdesc, i)->atttypid);
+				i++;
 			}
 			ZEND_HASH_FOREACH_END();
 		}
@@ -272,12 +295,16 @@ plphp_append_array_string(StringInfo str, const char *s, size_t len)
  * must be freed by the caller.
  */
 char *
-plphp_convert_to_pg_array(zval *array)
+plphp_convert_to_pg_array_typed(zval *array, Oid elemtype)
 {
 	int			arr_size;
 	zval	   *element;
 	int			i = 0;
+	bool		composite_elems;
 	StringInfoData	str;
+
+	composite_elems = OidIsValid(elemtype) &&
+		get_typtype(elemtype) == TYPTYPE_COMPOSITE;
 
 	initStringInfo(&str);
 
@@ -312,8 +339,21 @@ plphp_convert_to_pg_array(zval *array)
 											  Z_STRLEN_P(element));
 					break;
 				case IS_ARRAY:
-					tmp = plphp_convert_to_pg_array(element);
-					appendStringInfoString(&str, tmp);
+					if (composite_elems)
+					{
+						/* one composite element: a quoted record literal */
+						TupleDesc	td = lookup_rowtype_tupdesc(elemtype, -1);
+
+						tmp = plphp_build_record_literal(element, td);
+						ReleaseTupleDesc(td);
+						plphp_append_array_string(&str, tmp, strlen(tmp));
+					}
+					else
+					{
+						tmp = plphp_convert_to_pg_array_typed(element,
+															  elemtype);
+						appendStringInfoString(&str, tmp);
+					}
 					pfree(tmp);
 					break;
 				default:
@@ -333,6 +373,61 @@ plphp_convert_to_pg_array(zval *array)
 	return str.data;
 }
 
+char *
+plphp_convert_to_pg_array(zval *array)
+{
+	return plphp_convert_to_pg_array_typed(array, InvalidOid);
+}
+
+/*
+ * plphp_array_element_to_zval
+ * 		Convert one array element's text to a freshly emalloc'd zval.
+ *
+ * Composite elements become associative arrays (via the record parser).
+ * Other quoted elements are strings; unquoted ones are converted to PHP
+ * int/float when they look like numbers (preserving the semantics of the
+ * old zend_eval_string-based conversion) and are strings otherwise.
+ */
+static zval *
+plphp_array_element_to_zval(const char *str, size_t len, Oid elemtype,
+							bool quoted)
+{
+	zval	   *z;
+
+	if (OidIsValid(elemtype) && get_typtype(elemtype) == TYPTYPE_COMPOSITE)
+	{
+		TupleDesc	td = lookup_rowtype_tupdesc(elemtype, -1);
+
+		z = plphp_convert_from_pg_record(str, td);
+		ReleaseTupleDesc(td);
+		return z;
+	}
+
+	z = (zval *) emalloc(sizeof(zval));
+
+	if (quoted)
+		ZVAL_STRINGL(z, str, len);
+	else if (strcmp(str, "NULL") == 0)
+		ZVAL_NULL(z);
+	else
+	{
+		char	   *end;
+		long		lval;
+		double		dval;
+
+		errno = 0;
+		if (len > 0 && (lval = strtol(str, &end, 10), *end == '\0') &&
+			errno != ERANGE)
+			ZVAL_LONG(z, (zend_long) lval);
+		else if (len > 0 && (dval = strtod(str, &end), *end == '\0'))
+			ZVAL_DOUBLE(z, dval);
+		else
+			ZVAL_STRINGL(z, str, len);
+	}
+
+	return z;
+}
+
 /*
  * plphp_parse_array_body
  * 		Parse the contents of an array literal, starting just past an opening
@@ -341,15 +436,12 @@ plphp_convert_to_pg_array(zval *array)
  *
  * The input always comes from an array type's output function, so the
  * delimiter is assumed to be a comma (true for every built-in type except
- * box) and the syntax is trusted to be well-formed.
- *
- * Quoted elements are always strings.  Unquoted elements are NULL, or are
- * converted to PHP int/float when they look like numbers (preserving the
- * semantics of the old zend_eval_string-based conversion), and are strings
- * otherwise.
+ * box) and the syntax is trusted to be well-formed.  elemtype, when valid,
+ * identifies the array's element type so composite elements can be
+ * converted structurally; nested sub-arrays share it (multidimensionality).
  */
 static const char *
-plphp_parse_array_body(const char *p, zval *arr)
+plphp_parse_array_body(const char *p, zval *arr, Oid elemtype)
 {
 	StringInfoData buf;
 
@@ -369,11 +461,13 @@ plphp_parse_array_body(const char *p, zval *arr)
 			zval		sub;
 
 			array_init(&sub);
-			p = plphp_parse_array_body(p + 1, &sub);
+			p = plphp_parse_array_body(p + 1, &sub, elemtype);
 			add_next_index_zval(arr, &sub);
 		}
-		else if (*p == '"')		/* quoted element: always a string */
+		else if (*p == '"')		/* quoted element */
 		{
+			zval	   *el;
+
 			resetStringInfo(&buf);
 			for (p++; *p != '"'; p++)
 			{
@@ -384,30 +478,27 @@ plphp_parse_array_body(const char *p, zval *arr)
 				appendStringInfoChar(&buf, *p);
 			}
 			p++;				/* skip the closing quote */
-			add_next_index_stringl(arr, buf.data, buf.len);
+			el = plphp_array_element_to_zval(buf.data, buf.len, elemtype, true);
+			add_next_index_zval(arr, el);
+			efree(el);
 		}
 		else					/* unquoted element */
 		{
-			char	   *end;
-			long		lval;
-			double		dval;
+			zval	   *el;
 
 			resetStringInfo(&buf);
 			while (*p != ',' && *p != '}' && *p != '\0')
 				appendStringInfoChar(&buf, *p++);
 
-			errno = 0;
 			if (strcmp(buf.data, "NULL") == 0)
 				add_next_index_null(arr);
-			else if (buf.len > 0 &&
-					 (lval = strtol(buf.data, &end, 10), *end == '\0') &&
-					 errno != ERANGE)
-				add_next_index_long(arr, (zend_long) lval);
-			else if (buf.len > 0 &&
-					 (dval = strtod(buf.data, &end), *end == '\0'))
-				add_next_index_double(arr, dval);
 			else
-				add_next_index_stringl(arr, buf.data, buf.len);
+			{
+				el = plphp_array_element_to_zval(buf.data, buf.len, elemtype,
+												 false);
+				add_next_index_zval(arr, el);
+				efree(el);
+			}
 		}
 
 		/* between elements: expect a comma or the closing brace */
@@ -434,7 +525,7 @@ plphp_parse_array_body(const char *p, zval *arr)
  * Returns a freshly emalloc'd zval; see the ownership note in plphp_io.h.
  */
 zval *
-plphp_convert_from_pg_array(char *input)
+plphp_convert_from_pg_array(char *input, Oid elemtype)
 {
 	zval	   *retval;
 	const char *p = input;
@@ -447,7 +538,118 @@ plphp_convert_from_pg_array(char *input)
 
 	retval = (zval *) emalloc(sizeof(zval));
 	array_init(retval);
-	(void) plphp_parse_array_body(p + 1, retval);
+	(void) plphp_parse_array_body(p + 1, retval, elemtype);
+
+	return retval;
+}
+
+/*
+ * plphp_parse_record_body
+ * 		Parse a record literal's fields, starting just past the opening
+ * 		parenthesis, adding them to row keyed by column name.  Returns the
+ * 		position just past the closing parenthesis.
+ *
+ * Per the composite output format: fields are comma-separated in attribute
+ * order (dropped columns omitted); an empty field is NULL; quoted fields
+ * double any embedded quote and backslash.  Array- and composite-typed
+ * fields convert structurally, so the result nests all the way down.
+ */
+static const char *
+plphp_parse_record_body(const char *p, TupleDesc tupdesc, zval *row)
+{
+	StringInfoData buf;
+	int			i;
+
+	initStringInfo(&buf);
+
+	for (i = 0; i < tupdesc->natts; i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+		char	   *attname;
+		bool		isnull = false;
+		bool		quoted = false;
+
+		if (att->attisdropped)
+			continue;
+		attname = NameStr(att->attname);
+
+		resetStringInfo(&buf);
+
+		if (*p == ',' || *p == ')')
+			isnull = true;		/* empty field */
+		else if (*p == '"')
+		{
+			quoted = true;
+			for (p++;; p++)
+			{
+				if (*p == '\0')
+					elog(ERROR, "malformed record literal");
+				if (*p == '\\')
+				{
+					p++;
+					appendStringInfoChar(&buf, *p);
+					continue;
+				}
+				if (*p == '"')
+				{
+					if (p[1] == '"')
+					{
+						appendStringInfoChar(&buf, '"');
+						p++;
+						continue;
+					}
+					p++;		/* closing quote */
+					break;
+				}
+				appendStringInfoChar(&buf, *p);
+			}
+		}
+		else
+		{
+			while (*p != ',' && *p != ')' && *p != '\0')
+				appendStringInfoChar(&buf, *p++);
+		}
+
+		if (isnull)
+			add_assoc_null(row, attname);
+		else
+			plphp_add_row_value(row, attname, att->atttypid, buf.data);
+
+		(void) quoted;			/* value semantics equal either way */
+
+		if (*p == ',')
+			p++;
+		else if (*p != ')')
+			elog(ERROR, "malformed record literal");
+	}
+
+	if (*p != ')')
+		elog(ERROR, "malformed record literal");
+	p++;
+
+	pfree(buf.data);
+	return p;
+}
+
+/*
+ * plphp_convert_from_pg_record
+ * 		Convert a composite value's text representation to a PHP associative
+ * 		array keyed by column name (recursively, via plphp_add_row_value).
+ *
+ * Returns a freshly emalloc'd zval; see the ownership note in plphp_io.h.
+ */
+zval *
+plphp_convert_from_pg_record(const char *input, TupleDesc tupdesc)
+{
+	zval	   *retval;
+	const char *p = input;
+
+	if (*p != '(')
+		elog(ERROR, "expected a record literal, got \"%s\"", input);
+
+	retval = (zval *) emalloc(sizeof(zval));
+	array_init(retval);
+	(void) plphp_parse_record_body(p + 1, tupdesc, retval);
 
 	return retval;
 }
@@ -467,6 +669,115 @@ plphp_array_get_elem(zval *array, char *key)
 
 	/* zend_symtable_str_find honours integer-like string keys */
 	return zend_symtable_str_find(Z_ARRVAL_P(array), key, strlen(key));
+}
+
+/*
+ * plphp_build_record_literal
+ * 		Render a PHP array as a composite value's text form, "(f1,f2,...)".
+ *
+ * Fields are looked up by column name; if none of the names are present,
+ * the array's first N elements are used positionally (mirroring
+ * plphp_htup_from_zval).  Every non-null field is emitted double-quoted
+ * with embedded quotes and backslashes doubled, which the record input
+ * function accepts for any type; nulls become empty fields.  Array- and
+ * composite-typed fields are rendered recursively.
+ */
+static char *
+plphp_build_record_literal(zval *val, TupleDesc tupdesc)
+{
+	StringInfoData str;
+	bool		havenames = false;
+	int			i;
+	int			pos = 0;
+	bool		first = true;
+
+	if (Z_TYPE_P(val) != IS_ARRAY)
+		elog(ERROR, "composite value must be a PHP array");
+
+	/* do any of the column names appear as keys? */
+	for (i = 0; i < tupdesc->natts; i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+
+		if (att->attisdropped)
+			continue;
+		if (zend_symtable_str_find(Z_ARRVAL_P(val), NameStr(att->attname),
+								   strlen(NameStr(att->attname))) != NULL)
+		{
+			havenames = true;
+			break;
+		}
+	}
+
+	initStringInfo(&str);
+	appendStringInfoChar(&str, '(');
+
+	for (i = 0; i < tupdesc->natts; i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+		zval	   *el;
+		char	   *fieldstr;
+
+		if (att->attisdropped)
+			continue;
+
+		if (!first)
+			appendStringInfoChar(&str, ',');
+		first = false;
+
+		if (havenames)
+			el = zend_symtable_str_find(Z_ARRVAL_P(val),
+										NameStr(att->attname),
+										strlen(NameStr(att->attname)));
+		else
+			el = zend_hash_index_find(Z_ARRVAL_P(val), pos);
+		pos++;
+
+		fieldstr = plphp_zval_get_typed_cstring(el, att->atttypid);
+		if (fieldstr == NULL)
+			continue;			/* NULL: empty field */
+
+		appendStringInfoChar(&str, '"');
+		for (const char *c = fieldstr; *c; c++)
+		{
+			if (*c == '"' || *c == '\\')
+				appendStringInfoChar(&str, *c);
+			appendStringInfoChar(&str, *c);
+		}
+		appendStringInfoChar(&str, '"');
+		pfree(fieldstr);
+	}
+
+	appendStringInfoChar(&str, ')');
+	return str.data;
+}
+
+/*
+ * plphp_zval_get_typed_cstring
+ * 		Like plphp_zval_get_cstring (null_ok semantics), but renders a PHP
+ * 		array destined for a composite-typed slot as a record literal, and
+ * 		threads the element type into array rendering so composites nest.
+ */
+char *
+plphp_zval_get_typed_cstring(zval *val, Oid typid)
+{
+	if (val != NULL && Z_TYPE_P(val) == IS_ARRAY)
+	{
+		Oid			elemtype = get_element_type(typid);
+
+		if (get_typtype(typid) == TYPTYPE_COMPOSITE)
+		{
+			TupleDesc	td = lookup_rowtype_tupdesc(typid, -1);
+			char	   *ret = plphp_build_record_literal(val, td);
+
+			ReleaseTupleDesc(td);
+			return ret;
+		}
+		if (OidIsValid(elemtype))
+			return plphp_convert_to_pg_array_typed(val, elemtype);
+	}
+
+	return plphp_zval_get_cstring(val, true, true);
 }
 
 /*
@@ -666,7 +977,7 @@ plphp_modify_tuple(zval *outdata, TriggerData *tdata)
 			elog(ERROR, "$_TD['new'] does not contain attribute \"%s\"",
 				 attname);
 
-		vals[i] = plphp_zval_get_cstring(el, true, true);
+		vals[i] = plphp_zval_get_typed_cstring(el, att->atttypid);
 	}
 
 	/* Return to the original context so that the new tuple will survive */

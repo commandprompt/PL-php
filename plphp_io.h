@@ -44,7 +44,10 @@ HeapTuple plphp_htup_from_zval(zval *val, TupleDesc tupdesc);
 HeapTuple plphp_srf_htup_from_zval(zval *val, AttInMetadata *attinmeta,
 						 MemoryContext cxt);
 char *plphp_convert_to_pg_array(zval *array);
-zval *plphp_convert_from_pg_array(char *input);
+char *plphp_convert_to_pg_array_typed(zval *array, Oid elemtype);
+zval *plphp_convert_from_pg_array(char *input, Oid elemtype);
+zval *plphp_convert_from_pg_record(const char *input, TupleDesc tupdesc);
+char *plphp_zval_get_typed_cstring(zval *val, Oid typid);
 zval *plphp_array_get_elem(zval* array, char *key);
 char *plphp_zval_get_cstring(zval *val, bool do_array, bool null_ok);
 zval *plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc);
