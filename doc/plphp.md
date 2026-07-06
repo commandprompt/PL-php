@@ -141,6 +141,38 @@ distinguish an empty list from an empty map, the same ambiguity
 `json_encode` has); JSON numbers arrive as PHP int when they fit, else float
 (precision beyond a double is lost).
 
+### Native hstore via the `hstore_plphp` transform
+
+The companion `hstore_plphp` extension does for `hstore` what `jsonb_plphp`
+does for `jsonb`: with `TRANSFORM FOR TYPE hstore`, an `hstore` argument
+arrives as a PHP associative array of string keys to string-or-`null` values,
+and a returned PHP array is converted back. A PHP `null` value becomes an
+hstore `NULL`; keys and scalar values are stringified.
+
+```sql
+CREATE EXTENSION hstore_plphp CASCADE;   -- pulls in hstore and plphp
+
+CREATE FUNCTION tags_upper(hstore) RETURNS hstore
+LANGUAGE plphp TRANSFORM FOR TYPE hstore AS $$
+    $out = array();
+    foreach ($args[0] as $k => $v)
+        $out[strtoupper($k)] = is_null($v) ? null : strtoupper($v);
+    return $out;
+$$;
+SELECT tags_upper('a=>x, b=>NULL');   -- "A"=>"X", "B"=>NULL
+```
+
+Returning something other than an array, or a nested array as a value, is
+rejected with a clear error (hstore values are text or null).
+
+### Domains
+
+A domain is handled as its underlying base type: a scalar domain behaves like
+its base scalar, a domain over an array arrives as a PHP array (and can be
+returned as one), and a domain over a composite as an associative array. The
+domain's `CHECK` constraints are enforced on a returned value, just as
+PostgreSQL enforces them elsewhere.
+
 ## Composite types and records
 
 A composite argument arrives as an associative array keyed by column name; a
@@ -249,9 +281,9 @@ involved are available in the associative array `$_TD`:
 | `$_TD['relid']`    | table OID                                           |
 | `$_TD['relname']`  | table name                                          |
 | `$_TD['schemaname']` | schema name                                       |
-| `$_TD['when']`     | `BEFORE` or `AFTER`                                 |
+| `$_TD['when']`     | `BEFORE`, `AFTER`, or `INSTEAD OF`                  |
 | `$_TD['level']`    | `ROW` or `STATEMENT`                                |
-| `$_TD['event']`    | `INSERT`, `UPDATE`, or `DELETE`                     |
+| `$_TD['event']`    | `INSERT`, `UPDATE`, `DELETE`, or `TRUNCATE`         |
 | `$_TD['new']`      | new row (INSERT/UPDATE), as an associative array    |
 | `$_TD['old']`      | old row (UPDATE/DELETE), as an associative array    |
 | `$_TD['argc']`     | number of trigger arguments                         |
@@ -270,6 +302,13 @@ CREATE FUNCTION uppercase_name() RETURNS trigger LANGUAGE plphp AS $$
     return 'MODIFY';
 $$;
 ```
+
+The same return convention drives **INSTEAD OF ... FOR EACH ROW** triggers on
+views: the trigger does the real work (typically against a base table) and
+returns `;`/`'MODIFY'` to mark the row handled, or `'SKIP'` to skip it. A
+statement-level **TRUNCATE** trigger fires with `$_TD['event'] = 'TRUNCATE'`
+and no row; `WHEN (...)` conditions are evaluated by PostgreSQL, so the
+function only runs for matching rows.
 
 ## Event trigger functions
 
@@ -460,9 +499,24 @@ elog('ERROR',   'stop right here');   // aborts, like a PostgreSQL ERROR
 ```
 
 The level is one of `DEBUG`, `LOG`, `INFO`, `NOTICE`, `WARNING`, or `ERROR`
-(case-insensitive). `pg_raise(level, message)` is an older, narrower spelling
-that accepts `notice`, `warning`, or `error`. Anything PHP writes to standard
-output is also forwarded to the PostgreSQL log.
+(case-insensitive). Anything PHP writes to standard output is also forwarded to
+the PostgreSQL log.
+
+`pg_raise(level, message [, detail [, hint [, sqlstate]]])` accepts `notice`,
+`warning`, or `error`, and optionally attaches a `DETAIL`, a `HINT`, and (for
+`error`) a custom five-character `SQLSTATE` — the equivalent of PL/pgSQL's
+`RAISE ... USING`:
+
+```php
+pg_raise('error', 'balance would go negative',
+         'account 42 has 10, tried to withdraw 15',   // DETAIL
+         'deposit first, or withdraw less',            // HINT
+         '22003');                                     // SQLSTATE
+```
+
+These fields are readable on a caught `PgError` (`getSQLState()`, `getDetail()`,
+`getHint()`) and, when the error is left uncaught, appear on the error reported
+to the client.
 
 ## Shared data: `$_SHARED`
 

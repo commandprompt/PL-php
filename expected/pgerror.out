@@ -142,5 +142,72 @@ SELECT err_outer_catch();
  caught nested: division by zero at line 2
 (1 row)
 
+-- pg_raise can attach DETAIL, HINT and a custom SQLSTATE, like PL/pgSQL's
+-- RAISE ... USING.  Caught, all four fields are readable.
+CREATE FUNCTION err_raise_using() RETURNS text LANGUAGE plphp AS $$
+	try {
+		pg_raise('error', 'bad thing', 'because reasons', 'do X', '22023');
+	} catch (PgError $e) {
+		return sprintf("[%s] %s / detail=%s / hint=%s",
+			$e->getSQLState(), $e->getMessage(), $e->getDetail(), $e->getHint());
+	}
+$$;
+SELECT err_raise_using();
+                    err_raise_using                     
+--------------------------------------------------------
+ [22023] bad thing / detail=because reasons / hint=do X
+(1 row)
+
+-- The custom SQLSTATE/detail/hint survive an uncaught trip out through the
+-- PostgreSQL error layer and back into a PgError caught one call up.
+CREATE FUNCTION err_custom_inner() RETURNS void LANGUAGE plphp AS $$
+	pg_raise('error', 'custom failure', 'the gory details', 'try harder', '22012');
+$$;
+CREATE FUNCTION err_custom_outer() RETURNS text LANGUAGE plphp AS $$
+	try {
+		spi_exec("select err_custom_inner()");
+	} catch (PgError $e) {
+		return $e->getSQLState() . " | " . $e->getDetail() . " | " . $e->getHint();
+	}
+	return "not reached";
+$$;
+SELECT err_custom_outer();
+           err_custom_outer            
+---------------------------------------
+ 22012 | the gory details | try harder
+(1 row)
+
+-- Uncaught, the DETAIL and HINT lines show up in the error itself (psql
+-- prints them at default verbosity).
+CREATE FUNCTION err_uncaught_using() RETURNS void LANGUAGE plphp AS $$
+	pg_raise('error', 'boom', 'what went wrong', 'what to do');
+$$;
+SELECT err_uncaught_using();
+ERROR:  boom at line 2
+DETAIL:  what went wrong
+HINT:  what to do
+CONTEXT:  PL/php function "err_uncaught_using"
+-- A NOTICE can carry DETAIL/HINT too.
+CREATE FUNCTION note_using() RETURNS void LANGUAGE plphp AS $$
+	pg_raise('notice', 'heads up', 'more info', 'a suggestion');
+$$;
+SELECT note_using();
+NOTICE:  heads up
+DETAIL:  more info
+HINT:  a suggestion
+ note_using 
+------------
+ 
+(1 row)
+
+-- An invalid SQLSTATE (not five upper-case/digit characters) is rejected.
+CREATE FUNCTION err_bad_sqlstate() RETURNS void LANGUAGE plphp AS $$
+	pg_raise('error', 'x', null, null, 'abcde');
+$$;
+SELECT err_bad_sqlstate();
+ERROR:  pg_raise: SQLSTATE must contain only digits and upper-case ASCII letters at line 2
+CONTEXT:  PL/php function "err_bad_sqlstate"
+DROP FUNCTION err_raise_using(), err_custom_inner(), err_custom_outer(),
+	err_uncaught_using(), note_using(), err_bad_sqlstate();
 DROP FUNCTION err_inner(), err_outer(), err_outer_catch();
 DROP TABLE errt;

@@ -20,6 +20,23 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`hstore` transform (`hstore_plphp`).** A new `CREATE EXTENSION hstore_plphp`
+  adds `TRANSFORM FOR TYPE hstore`, mapping an `hstore` to a PHP associative
+  array of string keys to string-or-null values and back (a PHP `null` value
+  becomes an hstore `NULL`). Companion to the existing `jsonb_plphp`.
+- **Structured `pg_raise`.** `pg_raise(level, message [, detail [, hint [,
+  sqlstate]]])` now attaches `DETAIL`, `HINT` and (for `ERROR`) a custom
+  `SQLSTATE`, mirroring PL/pgSQL's `RAISE ... USING`. The fields are readable
+  on a caught `PgError` and survive an uncaught error out to the client.
+- **`TRUNCATE` and `INSTEAD OF` triggers.** Statement-level `TRUNCATE` triggers
+  (`$_TD['event'] = 'TRUNCATE'`) and view `INSTEAD OF` triggers
+  (`$_TD['when'] = 'INSTEAD OF'`) are now supported; previously the handler
+  errored on the unrecognized event/timing.
+- **Domains over arrays and composites.** A function argument or result typed
+  as a domain is now handled as its base type, so a domain over an array
+  arrives as a PHP array (and can be returned as one) and a domain over a
+  composite as an associative array. The domain's `CHECK` constraints are
+  still enforced on results. Scalar domains were already transparent.
 - **Project logo and brand assets.** Light/dark PL/php logos and a square icon
   under `doc/assets/`, wired into the README and language reference.
 - **Error CONTEXT lines.** Messages raised while PL/php code runs carry a
@@ -28,6 +45,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Uncaught database errors lost their SQLSTATE, DETAIL and HINT.** An error
+  that unwound to the top of a PL/php call was reported with only its message
+  (and `SQLSTATE XX000`); it now carries the original `SQLSTATE`, `DETAIL` and
+  `HINT` through the `zend_bailout` reporting path.
 - **Backend crash when an error crossed nested PL/php calls.** A PostgreSQL
   error unwinding out of a handler's `zend_try` left Zend's bailout
   environment pointing into a dead stack frame; the next uncaught error then

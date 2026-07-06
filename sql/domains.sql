@@ -1,0 +1,50 @@
+--
+-- Domain types.  A PL/php function sees a domain as its underlying base type
+-- (scalar, array or composite), and a value returned into a domain result is
+-- checked against the domain's constraints.
+--
+CREATE DOMAIN posint AS int CHECK (VALUE > 0);
+CREATE DOMAIN shortstr AS text CHECK (length(VALUE) <= 5);
+CREATE DOMAIN intvec AS int[] CHECK (cardinality(VALUE) > 0);
+
+-- A scalar domain argument arrives as the base value; the CHECK on the input
+-- has already been enforced by the caller.
+CREATE FUNCTION dom_scalar(posint, shortstr) RETURNS text LANGUAGE plphp AS $$
+    return $args[0] . "/" . strtoupper($args[1]);
+$$;
+SELECT dom_scalar(7, 'abc');
+
+-- Returning into a scalar domain enforces its CHECK.
+CREATE FUNCTION dom_double(int) RETURNS posint LANGUAGE plphp AS $$
+    return $args[0] * 2;
+$$;
+SELECT dom_double(21);
+SELECT dom_double(-1);   -- violates posint
+
+-- A domain over an array arrives as a PHP array, and a PHP array can be
+-- returned into it (the domain CHECK still applies).
+CREATE FUNCTION dom_arr_in(intvec) RETURNS int LANGUAGE plphp AS $$
+    return is_array($args[0]) ? array_sum($args[0]) : -1;
+$$;
+SELECT dom_arr_in('{10,20,30}');
+
+CREATE FUNCTION dom_arr_out(int) RETURNS intvec LANGUAGE plphp AS $$
+    $out = array();
+    for ($i = 1; $i <= $args[0]; $i++)
+        $out[] = $i * $i;
+    return $out;
+$$;
+SELECT dom_arr_out(4);
+SELECT dom_arr_out(0);   -- empty array violates intvec's CHECK
+
+-- A domain used as a composite field is unwrapped there too.
+CREATE TYPE drow AS (id posint, tag shortstr);
+CREATE FUNCTION dom_field(drow) RETURNS text LANGUAGE plphp AS $$
+    return $args[0]['id'] . ":" . $args[0]['tag'];
+$$;
+SELECT dom_field(ROW(3, 'ok')::drow);
+
+DROP FUNCTION dom_scalar(posint, shortstr), dom_double(int),
+    dom_arr_in(intvec), dom_arr_out(int), dom_field(drow);
+DROP TYPE drow;
+DROP DOMAIN posint, shortstr, intvec;

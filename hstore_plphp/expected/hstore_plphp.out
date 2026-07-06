@@ -1,0 +1,130 @@
+--
+-- hstore <-> PHP array transform.  Functions must opt in with
+-- TRANSFORM FOR TYPE hstore.
+--
+CREATE EXTENSION hstore_plphp CASCADE;
+NOTICE:  installing required extension "hstore"
+NOTICE:  installing required extension "plphp"
+-- An hstore argument arrives as an associative array of string => string/null.
+CREATE FUNCTION ht_classes(hstore) RETURNS text
+TRANSFORM FOR TYPE hstore
+LANGUAGE plphp AS $$
+    $h = $args[0];
+    ksort($h);
+    $out = [];
+    foreach ($h as $k => $v)
+        $out[] = "$k=" . (is_null($v) ? 'NULL' : gettype($v) . "($v)");
+    return implode(' ', $out);
+$$;
+SELECT ht_classes('a=>1, b=>NULL, "key with spaces"=>"and \"quotes\""'::hstore);
+                       ht_classes                        
+---------------------------------------------------------
+ a=string(1) b=NULL key with spaces=string(and "quotes")
+(1 row)
+
+-- Round-trip: modify and return; null becomes an hstore NULL.
+CREATE FUNCTION ht_upcase(hstore) RETURNS hstore
+TRANSFORM FOR TYPE hstore
+LANGUAGE plphp AS $$
+    $out = [];
+    foreach ($args[0] as $k => $v)
+        $out[strtoupper($k)] = is_null($v) ? null : strtoupper($v);
+    return $out;
+$$;
+SELECT ht_upcase('name=>widget, note=>NULL');
+           ht_upcase            
+--------------------------------
+ "NAME"=>"WIDGET", "NOTE"=>NULL
+(1 row)
+
+-- Build an hstore from PHP data: keys and scalar values are stringified,
+-- and a PHP null becomes an hstore NULL.
+CREATE FUNCTION ht_build(int) RETURNS hstore
+TRANSFORM FOR TYPE hstore
+LANGUAGE plphp AS $$
+    return ['n' => $args[0], 'double' => $args[0] * 2,
+            'ok' => $args[0] % 2 == 1, 'gone' => null];
+$$;
+SELECT ht_build(3);
+                     ht_build                     
+--------------------------------------------------
+ "n"=>"3", "ok"=>"1", "gone"=>NULL, "double"=>"6"
+(1 row)
+
+SELECT ht_build(4)->'double' AS doubled;
+ doubled 
+---------
+ 8
+(1 row)
+
+-- Idiomatic array work: merge and prune the nulls in one step.
+CREATE FUNCTION ht_merge(a hstore, b hstore) RETURNS hstore
+TRANSFORM FOR TYPE hstore
+LANGUAGE plphp AS $$
+    $m = array_merge($args[0], $args[1]);
+    return array_filter($m, fn($v) => !is_null($v));
+$$;
+SELECT ht_merge('a=>1, b=>2', 'b=>20, c=>NULL, d=>4');
+           ht_merge            
+-------------------------------
+ "a"=>"1", "b"=>"20", "d"=>"4"
+(1 row)
+
+-- The empty hstore round-trips.
+CREATE FUNCTION ht_empty(hstore) RETURNS hstore
+TRANSFORM FOR TYPE hstore
+LANGUAGE plphp AS $$
+    return $args[0];
+$$;
+SELECT ht_empty(''::hstore);
+ ht_empty 
+----------
+ 
+(1 row)
+
+-- A NULL hstore argument is null; returning null is SQL NULL.
+SELECT ht_empty(NULL) IS NULL AS null_roundtrip;
+ null_roundtrip 
+----------------
+ t
+(1 row)
+
+-- Returning something other than an array is rejected cleanly.
+CREATE FUNCTION ht_bad() RETURNS hstore
+TRANSFORM FOR TYPE hstore
+LANGUAGE plphp AS $$
+    return "not an array";
+$$;
+SELECT ht_bad();
+ERROR:  cannot transform PHP value to hstore
+HINT:  An hstore value is built from a PHP array.
+CONTEXT:  PL/php function "ht_bad"
+-- A nested value (array) is not a valid hstore value.
+CREATE FUNCTION ht_nested() RETURNS hstore
+TRANSFORM FOR TYPE hstore
+LANGUAGE plphp AS $$
+    return ['k' => ['nested']];
+$$;
+SELECT ht_nested();
+ERROR:  cannot transform nested PHP value to an hstore value
+HINT:  hstore values are text or null; stringify first.
+CONTEXT:  PL/php function "ht_nested"
+-- Without the TRANSFORM clause, hstore still arrives as its text form.
+CREATE FUNCTION ht_untransformed(hstore) RETURNS text LANGUAGE plphp AS $$
+    return gettype($args[0]);
+$$;
+SELECT ht_untransformed('a=>1'::hstore);
+ ht_untransformed 
+------------------
+ string
+(1 row)
+
+DROP EXTENSION hstore_plphp CASCADE;
+NOTICE:  drop cascades to 7 other objects
+DETAIL:  drop cascades to function ht_classes(hstore)
+drop cascades to function ht_upcase(hstore)
+drop cascades to function ht_build(integer)
+drop cascades to function ht_merge(hstore,hstore)
+drop cascades to function ht_empty(hstore)
+drop cascades to function ht_bad()
+drop cascades to function ht_nested()

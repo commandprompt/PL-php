@@ -54,7 +54,7 @@ SELECT hello('world');   -- Hello, world!
 | 🔐 **Transaction control** | `spi_commit` / `spi_rollback` in procedures, plus `subtransaction()` blocks. |
 | 🧰 **Utilities** | `quote_literal` / `quote_nullable` / `quote_ident`, `elog`, `$_SHARED`. |
 | 📦 **Session setup** | Anonymous `DO` blocks, `plphp_modules` autoloading, `plphp.on_init`, and a `plphp.start_proc` hook. |
-| 🧬 **Native jsonb** | The `jsonb_plphp` transform: `TRANSFORM FOR TYPE jsonb` maps jsonb ⇄ PHP arrays directly. |
+| 🧬 **Native jsonb & hstore** | The `jsonb_plphp` and `hstore_plphp` transforms map `jsonb` and `hstore` ⇄ PHP arrays directly. |
 
 See the [**language reference**](doc/plphp.md) for the full API, the
 [**cookbook**](doc/cookbook.md) for practical, regression-tested recipes, and

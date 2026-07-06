@@ -105,5 +105,53 @@ CREATE FUNCTION err_outer_catch() RETURNS text LANGUAGE plphp AS $$
 $$;
 SELECT err_outer_catch();
 
+-- pg_raise can attach DETAIL, HINT and a custom SQLSTATE, like PL/pgSQL's
+-- RAISE ... USING.  Caught, all four fields are readable.
+CREATE FUNCTION err_raise_using() RETURNS text LANGUAGE plphp AS $$
+	try {
+		pg_raise('error', 'bad thing', 'because reasons', 'do X', '22023');
+	} catch (PgError $e) {
+		return sprintf("[%s] %s / detail=%s / hint=%s",
+			$e->getSQLState(), $e->getMessage(), $e->getDetail(), $e->getHint());
+	}
+$$;
+SELECT err_raise_using();
+
+-- The custom SQLSTATE/detail/hint survive an uncaught trip out through the
+-- PostgreSQL error layer and back into a PgError caught one call up.
+CREATE FUNCTION err_custom_inner() RETURNS void LANGUAGE plphp AS $$
+	pg_raise('error', 'custom failure', 'the gory details', 'try harder', '22012');
+$$;
+CREATE FUNCTION err_custom_outer() RETURNS text LANGUAGE plphp AS $$
+	try {
+		spi_exec("select err_custom_inner()");
+	} catch (PgError $e) {
+		return $e->getSQLState() . " | " . $e->getDetail() . " | " . $e->getHint();
+	}
+	return "not reached";
+$$;
+SELECT err_custom_outer();
+
+-- Uncaught, the DETAIL and HINT lines show up in the error itself (psql
+-- prints them at default verbosity).
+CREATE FUNCTION err_uncaught_using() RETURNS void LANGUAGE plphp AS $$
+	pg_raise('error', 'boom', 'what went wrong', 'what to do');
+$$;
+SELECT err_uncaught_using();
+
+-- A NOTICE can carry DETAIL/HINT too.
+CREATE FUNCTION note_using() RETURNS void LANGUAGE plphp AS $$
+	pg_raise('notice', 'heads up', 'more info', 'a suggestion');
+$$;
+SELECT note_using();
+
+-- An invalid SQLSTATE (not five upper-case/digit characters) is rejected.
+CREATE FUNCTION err_bad_sqlstate() RETURNS void LANGUAGE plphp AS $$
+	pg_raise('error', 'x', null, null, 'abcde');
+$$;
+SELECT err_bad_sqlstate();
+
+DROP FUNCTION err_raise_using(), err_custom_inner(), err_custom_outer(),
+	err_uncaught_using(), note_using(), err_bad_sqlstate();
 DROP FUNCTION err_inner(), err_outer(), err_outer_catch();
 DROP TABLE errt;
