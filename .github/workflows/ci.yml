@@ -62,6 +62,8 @@ jobs:
 
       - name: Start the cluster
         run: |
+          # the runner image disables automatic cluster creation
+          sudo pg_createcluster ${{ matrix.pg }} main 2>/dev/null || true
           sudo pg_ctlcluster ${{ matrix.pg }} main start
           pg_lsclusters
 
