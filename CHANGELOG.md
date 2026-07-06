@@ -17,6 +17,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   unsupported and is rejected with a clear error). Previously any VARIADIC
   declaration failed.
 
+### Changed
+
+- **Array columns inside rows are PHP arrays now.** An array-typed column in
+  `$_TD['new']`/`['old']`, in rows from `spi_fetch_row`/`spi_fetchrow`, or in
+  a composite argument's fields used to arrive as its literal text form
+  (`{a,b}`); it now converts to a PHP array, and converts back when assigned
+  (e.g. trigger `MODIFY`). Code that string-parsed those values should use
+  the array directly.
+
 ### Fixed
 
 - **PHP 8.1, 8.2, and 8.4 compatibility.** PL/php now builds and passes the

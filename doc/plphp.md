@@ -87,6 +87,11 @@ function. In practice:
 | boolean                        | `"t"` / `"f"` string | `true` / `false`, or `"t"`/`"f"` |
 | arrays (e.g. `int[]`)          | PHP array            | PHP array               |
 | composite / row / record       | associative array    | associative array       |
+
+Array-typed *columns* inside rows — in `$_TD['new']`/`['old']`, rows from
+`spi_fetch_row`/`spi_fetchrow`, and composite arguments' fields — also arrive
+as PHP arrays, and can be assigned back as arrays (e.g. before a trigger
+`MODIFY`).
 | NULL                           | unset / null         | `return;` or `null`     |
 
 Arrays map naturally, including multidimensional arrays:

@@ -136,3 +136,62 @@ select bytea_read('\xdeadbeef');
  DEADBEEF
 (1 row)
 
+-- array-typed columns inside rows arrive as PHP arrays (not "{...}" strings):
+-- via SPI rows...
+create table arrt (id int, tags text[], nums int[]);
+insert into arrt values (1, array['red', 'b"lue'], array[10, 20, 30]);
+create function arr_in_row() returns text language plphp as $$
+	$r = spi_exec("select * from arrt");
+	$row = spi_fetch_row($r);
+	return gettype($row['tags']) . " " . $row['tags'][1] . " " . array_sum($row['nums']);
+$$;
+select arr_in_row();
+   arr_in_row   
+----------------
+ array b"lue 60
+(1 row)
+
+-- ...via cursor rows...
+create function arr_in_cursor() returns int language plphp as $$
+	$c = spi_query("select nums from arrt");
+	$row = spi_fetchrow($c);
+	return count($row['nums']);
+$$;
+select arr_in_cursor();
+ arr_in_cursor 
+---------------
+             3
+(1 row)
+
+-- ...in $_TD for triggers, and writable back through MODIFY
+create function arr_trig() returns trigger language plphp as $$
+	pg_raise('notice', 'tags is ' . gettype($_TD['new']['tags'])
+		. ' with ' . count($_TD['new']['tags']) . ' elements');
+	$_TD['new']['tags'][] = 'added';
+	return 'MODIFY';
+$$;
+create trigger arrt_trg before insert on arrt
+	for each row execute procedure arr_trig();
+insert into arrt values (2, array['green'], array[1]);
+NOTICE:  plphp: tags is array with 1 elements
+select tags from arrt where id = 2;
+     tags      
+---------------
+ {green,added}
+(1 row)
+
+drop trigger arrt_trg on arrt;
+-- ...and in composite-type arguments
+create type with_arr as (label text, vals int[]);
+create function arr_in_comp(with_arr) returns int language plphp as $$
+	return array_sum($args[0]['vals']);
+$$;
+select arr_in_comp(row('x', array[5, 6, 7])::with_arr);
+ arr_in_comp 
+-------------
+          18
+(1 row)
+
+drop function arr_in_row(), arr_in_cursor(), arr_in_comp(with_arr), arr_trig();
+drop type with_arr;
+drop table arrt;
