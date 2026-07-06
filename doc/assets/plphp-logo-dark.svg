@@ -1,0 +1,19 @@
+<svg viewBox="0 0 1160 300" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1160" height="300" fill="#1B2430"/>
+  <g transform="translate(-21.6,-66.6) scale(0.6)">
+  <path d="M 128 300 C 92 322, 86 362, 103 398" stroke="#5A8FBF" stroke-width="11" fill="none" stroke-linecap="round"/>
+  <rect x="175" y="402" width="50" height="114" rx="22" fill="#5A8FBF"/>
+  <rect x="250" y="402" width="50" height="114" rx="22" fill="#5A8FBF"/>
+  <rect x="325" y="402" width="50" height="114" rx="22" fill="#7FB0DA"/>
+  <rect x="384" y="382" width="50" height="134" rx="22" fill="#7FB0DA"/>
+  <ellipse cx="290" cy="330" rx="165" ry="120" fill="#6FA6D6"/>
+  <circle cx="445" cy="270" r="95" fill="#9B9FD4"/>
+  <path d="M 430 205 C 398 195, 372 220, 373 258 C 374 292, 400 315, 435 312 C 448 311, 455 302, 450 291 C 438 265, 438 235, 450 214 C 456 204, 444 200, 430 205 Z" fill="#5A8FBF"/>
+  <path d="M 485 320 C 505 360, 500 400, 475 430 C 455 452, 430 458, 415 445 C 430 440, 445 425, 450 405 C 457 375, 450 345, 430 320 C 445 305, 470 305, 485 320 Z" fill="#9B9FD4"/>
+  <circle cx="475" cy="248" r="12" fill="#1B2430"/>
+  <circle cx="478" cy="248" r="6" fill="#FAF9F6"/>
+  <path d="M 505 335 C 517 345, 517 360, 505 368" stroke="#1B2430" stroke-width="8" fill="none" stroke-linecap="round"/>
+  </g>
+  <text x="334" y="165" font-family="Consolas, 'DejaVu Sans Mono', 'Courier New', monospace" font-weight="700" font-size="112"><tspan fill="#7FB0DA">PL</tspan><tspan fill="#E8E8ED">/</tspan><tspan fill="#B3B6E6">php</tspan></text>
+  <text x="337" y="209" font-family="Arial, sans-serif" font-size="24" letter-spacing="1" fill="#9CA3AF">PROCEDURAL LANGUAGE FOR POSTGRESQL</text>
+</svg>

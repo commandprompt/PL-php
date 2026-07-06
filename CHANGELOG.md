@@ -20,6 +20,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Project logo and brand assets.** Light/dark PL/php logos and a square icon
+  under `doc/assets/`, wired into the README and language reference.
 - **Error CONTEXT lines.** Messages raised while PL/php code runs carry a
   `CONTEXT: PL/php function "name"` line (or the anonymous-block/compilation
   variants), like every other procedural language.
