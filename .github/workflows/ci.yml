@@ -70,6 +70,8 @@ jobs:
       - name: Run the regression tests
         run: |
           port=$(pg_lsclusters | awk '$1 == "${{ matrix.pg }}" && $2 == "main" { print $3 }')
+          # let the postgres user reach and write the workspace
+          sudo chmod a+x /home/runner /home/runner/work /home/runner/work/PL-php
           chmod -R a+rwX .
           sudo -u postgres env PGPORT=$port \
             make PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config installcheck
