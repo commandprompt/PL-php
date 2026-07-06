@@ -27,7 +27,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - **Transforms reach nested contexts.** A declared `jsonb`/`hstore` transform
   now also applies to values of that type inside composite argument/result
   fields, `RETURNS SETOF`/`return_next` rows, and a trigger's `$_TD` rows
-  (including the `'MODIFY'` return) — not only as top-level arguments and
+  (including the `'MODIFY'` return), not only as top-level arguments and
   results. Rows read back through SPI are still left in text form.
 - **Structured `pg_raise`.** `pg_raise(level, message [, detail [, hint [,
   sqlstate]]])` now attaches `DETAIL`, `HINT` and (for `ERROR`) a custom
