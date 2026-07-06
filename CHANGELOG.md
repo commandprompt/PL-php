@@ -5,6 +5,17 @@ All notable changes to PL/php are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Per-function memory contexts.** Each compiled function's descriptor and
+  subsidiary data (fmgr info records included) now live in their own memory
+  context, deleted wholesale on redefinition — implementing a FIXME as old
+  as the file. This also closes a use-after-free window: the compiled-
+  function cache used to briefly point at freed memory during recompilation,
+  which an unluckily timed statement cancel could have hit.
+
 ## [2.3.0] — 2026-07-06
 
 ### Added
