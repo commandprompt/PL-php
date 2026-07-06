@@ -5,18 +5,7 @@ All notable changes to PL/php are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/).
 
-## [2.4.0] - 2026-07-06
-
-### Fixed
-
-- **Per-function memory contexts.** Each compiled function's descriptor and
-  subsidiary data (fmgr info records included) now live in their own memory
-  context, deleted wholesale on redefinition, implementing a FIXME as old
-  as the file. This also closes a use-after-free window: the compiled-
-  function cache used to briefly point at freed memory during recompilation,
-  which an unluckily timed statement cancel could have hit.
-
-## [Unreleased]
+## [2.5.0] - 2026-07-06
 
 ### Added
 
@@ -44,9 +33,6 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   still enforced on results. Scalar domains were already transparent.
 - **Project logo and brand assets.** Light/dark PL/php logos and a square icon
   under `doc/assets/`, wired into the README and language reference.
-- **Error CONTEXT lines.** Messages raised while PL/php code runs carry a
-  `CONTEXT: PL/php function "name"` line (or the anonymous-block/compilation
-  variants), like every other procedural language.
 
 ### Fixed
 
@@ -54,12 +40,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   that unwound to the top of a PL/php call was reported with only its message
   (and `SQLSTATE XX000`); it now carries the original `SQLSTATE`, `DETAIL` and
   `HINT` through the `zend_bailout` reporting path.
-- **Backend crash when an error crossed nested PL/php calls.** A PostgreSQL
-  error unwinding out of a handler's `zend_try` left Zend's bailout
-  environment pointing into a dead stack frame; the next uncaught error then
-  jumped into garbage. Nested regression cases added.
 
-## [Unreleased]
+## [2.4.0] - 2026-07-06
 
 ### Added
 
@@ -74,14 +56,25 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - **ASAN in CI.** A workflow job builds with AddressSanitizer and runs the
   suite against a `libasan`-preloaded server, catching memory-safety bugs
   mechanically (new `ASAN_FLAGS` hook in the Makefiles).
-
-## [Unreleased]
-
-### Added
-
 - **A reproducible benchmark suite** (`bench/`) and published results
   (`doc/benchmarks.md`) comparing PL/php with PL/pgSQL and PL/Perl: within a
-  few percent on scalar and string work, 1.75× PL/Perl on SPI row loops.
+  few percent on scalar and string work, 1.75x PL/Perl on SPI row loops.
+- **Error CONTEXT lines.** Messages raised while PL/php code runs carry a
+  `CONTEXT: PL/php function "name"` line (or the anonymous-block/compilation
+  variants), like every other procedural language.
+
+### Fixed
+
+- **Per-function memory contexts.** Each compiled function's descriptor and
+  subsidiary data (fmgr info records included) now live in their own memory
+  context, deleted wholesale on redefinition, implementing a FIXME as old
+  as the file. This also closes a use-after-free window: the compiled-
+  function cache used to briefly point at freed memory during recompilation,
+  which an unluckily timed statement cancel could have hit.
+- **Backend crash when an error crossed nested PL/php calls.** A PostgreSQL
+  error unwinding out of a handler's `zend_try` left Zend's bailout
+  environment pointing into a dead stack frame; the next uncaught error then
+  jumped into garbage. Nested regression cases added.
 
 ## [2.3.0] - 2026-07-06
 
