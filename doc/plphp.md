@@ -1,3 +1,10 @@
+<div align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/plphp-logo-dark.svg">
+  <img src="assets/plphp-logo.svg" alt="PL/php" width="360">
+</picture>
+</div>
+
 # PL/php Language Reference
 
 PL/php lets you write PostgreSQL functions and triggers in PHP. This document

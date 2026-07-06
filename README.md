@@ -1,6 +1,9 @@
 <div align="center">
 
-# PL/php
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="doc/assets/plphp-logo-dark.svg">
+  <img src="doc/assets/plphp-logo.svg" alt="PL/php — Procedural Language for PostgreSQL" width="460">
+</picture>
 
 **Write PostgreSQL functions, triggers, and procedures in PHP.**
 
