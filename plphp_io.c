@@ -30,6 +30,57 @@ static const char *plphp_parse_record_body(const char *p, TupleDesc tupdesc,
 static char *plphp_build_record_literal(zval *val, TupleDesc tupdesc);
 
 /*
+ * plphp_col_transform
+ * 		Return the From/To SQL transform function OID for a column of type
+ * 		typid under the given transform context, or InvalidOid when there is
+ * 		no context or the type is not one the function declared a transform
+ * 		for.  Used to convert transform-typed columns inside trigger rows,
+ * 		composites and set-returning results (rows read from SPI pass a NULL
+ * 		context, so they are left untransformed).
+ */
+Oid
+plphp_col_transform(plphp_trans_ctx *tctx, Oid typid, bool fromsql)
+{
+	if (tctx == NULL || tctx->trftypes == NIL)
+		return InvalidOid;
+	return fromsql
+		? get_transform_fromsql(typid, tctx->lang_oid, tctx->trftypes)
+		: get_transform_tosql(typid, tctx->lang_oid, tctx->trftypes);
+}
+
+/*
+ * plphp_col_to_cstring
+ * 		Convert one column's PHP value to the text form the tuple builders
+ * 		(BuildTupleFromCStrings) expect.  When the function declared a ToSQL
+ * 		transform for the column's type, a non-null value is converted through
+ * 		it (e.g. a PHP array -> hstore/jsonb) and then rendered to text for
+ * 		re-parsing; otherwise -- and for a NULL/absent value -- the value is
+ * 		stringified exactly as before.  Result is palloc'd, or NULL.
+ */
+static char *
+plphp_col_to_cstring(zval *val, Oid atttypid, plphp_trans_ctx *tctx)
+{
+	Oid		trf = plphp_col_transform(tctx, atttypid, false);
+
+	if (OidIsValid(trf) && val != NULL)
+	{
+		zval   *v = val;
+
+		ZVAL_DEREF(v);
+		if (Z_TYPE_P(v) != IS_NULL)
+		{
+			Datum		d = OidFunctionCall1(trf, PointerGetDatum(v));
+			Oid			typoutput;
+			bool		typisvarlena;
+
+			getTypeOutputInfo(atttypid, &typoutput, &typisvarlena);
+			return OidOutputFunctionCall(typoutput, d);
+		}
+	}
+	return plphp_zval_get_typed_cstring(val, atttypid);
+}
+
+/*
  * plphp_add_row_value
  * 		Add one column's text value to a row hash under attname, converting
  * 		array-typed columns to PHP arrays (like the argument conversion
@@ -105,7 +156,7 @@ plphp_zval_from_tuple(HeapTuple tuple, TupleDesc tupdesc)
  * arrays in form array(1,2,3) as the result of functions with OUT arguments.
  */
 HeapTuple
-plphp_htup_from_zval(zval *val, TupleDesc tupdesc)
+plphp_htup_from_zval(zval *val, TupleDesc tupdesc, plphp_trans_ctx *tctx)
 {
 	MemoryContext	oldcxt;
 	MemoryContext	tmpcxt;
@@ -127,8 +178,8 @@ plphp_htup_from_zval(zval *val, TupleDesc tupdesc)
 		char   *key = SPI_fname(tupdesc, i + 1);
 		zval   *scalarval = plphp_array_get_elem(val, key);
 
-		values[i] = plphp_zval_get_typed_cstring(scalarval,
-									TupleDescAttr(tupdesc, i)->atttypid);
+		values[i] = plphp_col_to_cstring(scalarval,
+									TupleDescAttr(tupdesc, i)->atttypid, tctx);
 		/*
 		 * Reset the flag if even one of the keys actually exists,
 		 * even if it is NULL.
@@ -150,8 +201,8 @@ plphp_htup_from_zval(zval *val, TupleDesc tupdesc)
 		{
 			if (i >= tupdesc->natts)
 				break;
-			values[i] = plphp_zval_get_typed_cstring(element,
-									TupleDescAttr(tupdesc, i)->atttypid);
+			values[i] = plphp_col_to_cstring(element,
+									TupleDescAttr(tupdesc, i)->atttypid, tctx);
 			i++;
 		}
 		ZEND_HASH_FOREACH_END();
@@ -178,7 +229,7 @@ plphp_htup_from_zval(zval *val, TupleDesc tupdesc)
  */
 HeapTuple
 plphp_srf_htup_from_zval(zval *val, AttInMetadata *attinmeta,
-						 MemoryContext cxt)
+						 MemoryContext cxt, plphp_trans_ctx *tctx)
 {
 	MemoryContext	oldcxt;
 	HeapTuple		ret;
@@ -206,8 +257,14 @@ plphp_srf_htup_from_zval(zval *val, AttInMetadata *attinmeta,
 		{
 			Form_pg_attribute att = TupleDescAttr(attinmeta->tupdesc, 0);
 
+			/*
+			 * A transform-typed single column takes the whole value (e.g.
+			 * RETURNS SETOF hstore, where each row is one map).
+			 */
+			if (OidIsValid(plphp_col_transform(tctx, att->atttypid, false)))
+				values[0] = plphp_col_to_cstring(val, att->atttypid, tctx);
 			/* Is it an array? */
-			if (att->attndims != 0 ||
+			else if (att->attndims != 0 ||
 				!OidIsValid(get_element_type(att->atttypid)))
 			{
 				zval   *element = NULL;
@@ -240,8 +297,8 @@ plphp_srf_htup_from_zval(zval *val, AttInMetadata *attinmeta,
 					break;
 				}
 
-				values[i] = plphp_zval_get_typed_cstring(element,
-						TupleDescAttr(attinmeta->tupdesc, i)->atttypid);
+				values[i] = plphp_col_to_cstring(element,
+						TupleDescAttr(attinmeta->tupdesc, i)->atttypid, tctx);
 				i++;
 			}
 			ZEND_HASH_FOREACH_END();
@@ -249,13 +306,20 @@ plphp_srf_htup_from_zval(zval *val, AttInMetadata *attinmeta,
 	}
 	else
 	{
+		Form_pg_attribute att;
+
 		/* The passed zval is not an array -- use as the only attribute */
 		if (attinmeta->tupdesc->natts != 1)
 			ereport(ERROR,
 					(errmsg("returned array does not correspond to "
 							"declared return value")));
 
-		values[0] = plphp_zval_get_cstring(val, true, true);
+		/* A scalar into a transform-typed single column still transforms. */
+		att = TupleDescAttr(attinmeta->tupdesc, 0);
+		if (OidIsValid(plphp_col_transform(tctx, att->atttypid, false)))
+			values[0] = plphp_col_to_cstring(val, att->atttypid, tctx);
+		else
+			values[0] = plphp_zval_get_cstring(val, true, true);
 	}
 
 	MemoryContextSwitchTo(oldcxt);
@@ -856,7 +920,8 @@ plphp_zval_get_cstring(zval *val, bool do_array, bool null_ok)
  * Returns a freshly emalloc'd zval; see the ownership note in plphp_io.h.
  */
 zval *
-plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc)
+plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc,
+						   plphp_trans_ctx *tctx)
 {
 	int			i;
 	zval	   *output;
@@ -873,6 +938,7 @@ plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc)
 	for (i = 0; i < tupdesc->natts; i++)
 	{
 		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+		Oid			trf;
 
 		/* Ignore dropped attributes */
 		if (att->attisdropped)
@@ -888,6 +954,22 @@ plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc)
 		if (isnull)
 		{
 			add_assoc_null(output, attname);
+			continue;
+		}
+
+		/*
+		 * If this column's type has a FromSQL transform for the function,
+		 * convert it to a native PHP value directly (e.g. jsonb/hstore become
+		 * PHP arrays) instead of going through the text representation.
+		 */
+		trf = plphp_col_transform(tctx, att->atttypid, true);
+		if (OidIsValid(trf))
+		{
+			zval   *transformed =
+				(zval *) DatumGetPointer(OidFunctionCall1(trf, attr_datum));
+
+			add_assoc_zval(output, attname, transformed);
+			efree(transformed);
 			continue;
 		}
 
@@ -920,7 +1002,7 @@ plphp_build_tuple_argument(HeapTuple tuple, TupleDesc tupdesc)
  * by the caller.
  */
 HeapTuple
-plphp_modify_tuple(zval *outdata, TriggerData *tdata)
+plphp_modify_tuple(zval *outdata, TriggerData *tdata, plphp_trans_ctx *tctx)
 {
 	TupleDesc	tupdesc;
 	HeapTuple	rettuple;
@@ -977,7 +1059,7 @@ plphp_modify_tuple(zval *outdata, TriggerData *tdata)
 			elog(ERROR, "$_TD['new'] does not contain attribute \"%s\"",
 				 attname);
 
-		vals[i] = plphp_zval_get_typed_cstring(el, att->atttypid);
+		vals[i] = plphp_col_to_cstring(el, att->atttypid, tctx);
 	}
 
 	/* Return to the original context so that the new tuple will survive */

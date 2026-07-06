@@ -24,6 +24,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   adds `TRANSFORM FOR TYPE hstore`, mapping an `hstore` to a PHP associative
   array of string keys to string-or-null values and back (a PHP `null` value
   becomes an hstore `NULL`). Companion to the existing `jsonb_plphp`.
+- **Transforms reach nested contexts.** A declared `jsonb`/`hstore` transform
+  now also applies to values of that type inside composite argument/result
+  fields, `RETURNS SETOF`/`return_next` rows, and a trigger's `$_TD` rows
+  (including the `'MODIFY'` return) — not only as top-level arguments and
+  results. Rows read back through SPI are still left in text form.
 - **Structured `pg_raise`.** `pg_raise(level, message [, detail [, hint [,
   sqlstate]]])` now attaches `DETAIL`, `HINT` and (for `ERROR`) a custom
   `SQLSTATE`, mirroring PL/pgSQL's `RAISE ... USING`. The fields are readable

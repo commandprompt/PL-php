@@ -165,6 +165,21 @@ SELECT tags_upper('a=>x, b=>NULL');   -- "A"=>"X", "B"=>NULL
 Returning something other than an array, or a nested array as a value, is
 rejected with a clear error (hstore values are text or null).
 
+### Where transforms apply
+
+A declared transform (`jsonb` or `hstore`) is not limited to top-level
+arguments and results. For a function that declares it, the transform also
+converts values of that type **inside**:
+
+- a composite argument's fields, and a composite/record result's fields;
+- `RETURNS SETOF` / `RETURNS TABLE` rows emitted with `return_next`;
+- a trigger's `$_TD['new']` and `$_TD['old']` columns (and the row returned by
+  `'MODIFY'`).
+
+Rows read back through SPI (`spi_exec` / `spi_fetch_row` / cursors) are **not**
+transformed — like a value crossing the boundary without a `TRANSFORM` clause,
+they arrive in their text form.
+
 ### Domains
 
 A domain is handled as its underlying base type: a scalar domain behaves like
