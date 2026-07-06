@@ -5,6 +5,6 @@
 # the server's OS user.  The extension is therefore superuser-only to install
 # and the language is created without the TRUSTED attribute.
 comment = 'PL/php procedural language (untrusted)'
-default_version = '2.2'
+default_version = '2.3'
 module_pathname = '$libdir/plphp'
 relocatable = false
