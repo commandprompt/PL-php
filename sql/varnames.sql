@@ -46,3 +46,26 @@ select php_invalidvarname('foo');
 
 
 
+
+-- VARIADIC parameters: the executor delivers the collected array, so it
+-- behaves as an array argument (positional and named)
+CREATE FUNCTION vsum(VARIADIC nums int[]) RETURNS int LANGUAGE plphp AS $$
+    return array_sum($args[0]);
+$$;
+SELECT vsum(1, 2, 3);
+SELECT vsum(10);
+SELECT vsum(VARIADIC ARRAY[4, 5, 6]);
+
+CREATE FUNCTION vjoin(sep text, VARIADIC parts text[]) RETURNS text LANGUAGE plphp AS $$
+    return implode($sep, $parts);     // named aliases work for both
+$$;
+SELECT vjoin('-', 'a', 'b', 'c');
+
+-- VARIADIC "any" cannot be supported (arguments stay separate and untyped);
+-- the error is raised on first use
+CREATE FUNCTION vany(VARIADIC "any") RETURNS int LANGUAGE plphp AS $$
+    return $argc;
+$$;
+SELECT vany(1, 'x'::text, true);
+
+DROP FUNCTION vsum(int[]), vjoin(text, text[]), vany("any");

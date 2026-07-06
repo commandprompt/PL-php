@@ -153,6 +153,8 @@ PL/php supports the full range of argument modes.
 - **OUT** / **INOUT** arguments: assign the result to a PHP variable named after
   the argument, or return an array of the OUT values.
 - **TABLE(...)** columns behave like OUT arguments for a set-returning function.
+- **VARIADIC** parameters arrive as a single PHP array holding the collected
+  arguments (`VARIADIC "any"` is not supported).
 - **Named** parameters are also available as `$name` (aliased to the matching
   `$args` element), in addition to positional `$args`.
 

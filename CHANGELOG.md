@@ -5,6 +5,15 @@ All notable changes to PL/php are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **VARIADIC parameters.** A variadic function's collected arguments arrive
+  as a single PHP array, matching every other PL (`VARIADIC "any"` remains
+  unsupported and is rejected with a clear error). Previously any VARIADIC
+  declaration failed.
+
 ## [2.2.0] — 2026-07-05
 
 ### Added

@@ -1817,7 +1817,21 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 						case PROARGMODE_TABLE:
 							break;
 						case PROARGMODE_VARIADIC:
-							elog(ERROR, "VARIADIC arguments are not supported");
+
+							/*
+							 * The executor collects a variadic call's extra
+							 * arguments into a single array before the
+							 * language handler runs, so a VARIADIC parameter
+							 * is just an array-typed IN argument to us.  The
+							 * exception is VARIADIC "any", where the
+							 * arguments stay separate and untyped.
+							 */
+							if (argtypes[i] == ANYOID)
+								ereport(ERROR,
+										(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+										 errmsg("PL/php functions cannot accept "
+												"VARIADIC \"any\" arguments")));
+							break;
 						default:
 							elog(ERROR, "Unsupported type %c for argument no %d",
 								 argmodes[i], i);
