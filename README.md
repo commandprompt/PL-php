@@ -134,6 +134,7 @@ roles you would trust with the server's OS account.
 
 - [Language reference](doc/plphp.md)
 - [Cookbook — tested recipes](doc/cookbook.md)
+- [Benchmarks](doc/benchmarks.md) — within a few percent of PL/pgSQL on scalar work; 1.75× PL/Perl on row loops
 - [Installation](INSTALL)
 - [Changelog](CHANGELOG.md)
 - [PL/php vs PL/Perl](doc/plperl-comparison.md)
