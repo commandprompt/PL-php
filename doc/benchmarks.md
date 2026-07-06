@@ -30,7 +30,7 @@ warm session, Ubuntu 24.04 container on x86-64. Higher is better; treat
 - **Row iteration is PL/pgSQL's home turf.** Its `FOR ... IN SELECT` loop
   iterates natively without crossing a language boundary per row. PL/php
   pays a C-to-PHP conversion per row (one output-function call and one zval
-  per column) — and is still **1.75× faster than PL/Perl**, which
+  per column) and is still **1.75x faster than PL/Perl**, which
   materializes the entire result into Perl structures up front.
 - **Repeated SPI statements** carry a per-call subtransaction in both PL/php
   and PL/Perl (that is what makes their errors catchable); PL/pgSQL's
@@ -43,12 +43,12 @@ per row) measured as a no-op: the row-loop cost lives in per-cell value
 conversion, not key handling. The optimization was dropped rather than
 carried as complexity without benefit. A future fast path worth exploring is
 converting common scalar types (int/float/bool/text) from their binary Datum
-form instead of through the type output functions — that requires threading
+form instead of through the type output functions; that requires threading
 type metadata into `spi_fetch_row`'s result handling.
 
 ## Guidance
 
-- For pure computation, use whichever language reads best — the overhead
+- For pure computation, use whichever language reads best; the overhead
   differences are negligible.
 - For tight loops over large results, prefer a set-based SQL statement (or
   PL/pgSQL) when the logic allows; when you need PHP's expressiveness per

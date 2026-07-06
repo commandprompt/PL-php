@@ -23,7 +23,7 @@ CREATE FUNCTION cov_dml() RETURNS text LANGUAGE plphp AS $$
 	$out[] = spi_status($r) . ":" . spi_processed($r);
 	$r = spi_exec("delete from cov_t where a = 1");
 	$out[] = spi_status($r) . ":" . spi_processed($r);
-	// fetching from a non-SELECT result is refused politely
+	// fetching from a non-SELECT result is refused
 	$row = spi_fetch_row($r);
 	$out[] = $row === false ? "no-fetch" : "fetched?";
 	return implode(" ", $out);

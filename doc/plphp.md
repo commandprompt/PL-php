@@ -41,8 +41,8 @@ and only superusers can create PL/php functions. See [Security](#security).
 The body of a `LANGUAGE plphp` function is the body of a PHP function. Inside
 it you have:
 
-- `$args` — a 0-indexed array of the call arguments.
-- `$argc` — the number of declared arguments.
+- `$args`: a 0-indexed array of the call arguments.
+- `$argc`: the number of declared arguments.
 - Return a value with PHP's `return`.
 
 ```sql
@@ -88,8 +88,8 @@ function. In practice:
 | arrays (e.g. `int[]`)          | PHP array            | PHP array               |
 | composite / row / record       | associative array    | associative array       |
 
-Array- and composite-typed *columns* inside rows — in `$_TD['new']`/`['old']`,
-rows from `spi_fetch_row`/`spi_fetchrow`, and composite arguments' fields —
+Array- and composite-typed *columns* inside rows (in `$_TD['new']`/`['old']`,
+rows from `spi_fetch_row`/`spi_fetchrow`, and composite arguments' fields)
 also convert structurally, all the way down: arrays become PHP arrays,
 composites become associative arrays, in both directions (so a trigger can
 `MODIFY` a nested composite field, and a function can return one built from
@@ -109,7 +109,7 @@ SELECT php_an_array();   -- {{1,3,5},{2,4,6}}
 
 By default a `jsonb` value crosses the boundary as its text form. Install the
 companion extension and declare `TRANSFORM FOR TYPE jsonb` to work with
-**native PHP values** instead — JSON objects/arrays become PHP arrays, numbers
+**native PHP values** instead: JSON objects/arrays become PHP arrays, numbers
 become int/float, booleans and null map directly, in both directions:
 
 ```sql
@@ -130,7 +130,7 @@ $$;
 
 Notes (shared with `jsonb_plperl`): returning PHP `null` yields SQL `NULL`,
 not jsonb `null`; an empty PHP array comes back as `[]` (PHP cannot
-distinguish an empty list from an empty map — the same ambiguity
+distinguish an empty list from an empty map, the same ambiguity
 `json_encode` has); JSON numbers arrive as PHP int when they fit, else float
 (precision beyond a double is lost).
 
@@ -181,7 +181,7 @@ SELECT * FROM add_sub(10, 4);   -- sum=14, diff=6
 
 Named arguments must be valid PHP identifiers.
 
-The same convention works for **INOUT parameters in procedures** — assign to
+The same convention works for **INOUT parameters in procedures**: assign to
 the variable; `CALL` reports the resulting values (always as a row, even for
 a single INOUT parameter):
 
@@ -215,7 +215,7 @@ array matching the result columns). `return_next()` with no argument emits a row
 built from the current OUT/TABLE variables.
 
 Alternatively, return the whole result set at once as an array with one
-element per row (like PL/Perl's "return a reference to an array" form) — handy
+element per row, like PL/Perl's "return a reference to an array" form. Use it
 when the rows are already collected in a variable:
 
 ```sql
@@ -252,9 +252,9 @@ involved are available in the associative array `$_TD`:
 
 Return value of a **BEFORE ... FOR EACH ROW** trigger:
 
-- `return;` (NULL) — proceed with the operation using the unmodified row.
-- `return 'SKIP';` — silently skip the operation for this row.
-- `return 'MODIFY';` — proceed using the (modified) `$_TD['new']` row. Modify
+- `return;` (NULL): proceed with the operation using the unmodified row.
+- `return 'SKIP';`: silently skip the operation for this row.
+- `return 'MODIFY';`: proceed using the (modified) `$_TD['new']` row. Modify
   fields in place, e.g. `$_TD['new']['col'] = 'value';`.
 
 ```sql
@@ -289,14 +289,14 @@ The return value of an event trigger function is ignored.
 
 Run queries against the current database from within a function:
 
-- `spi_exec(query [, limit])` — execute `query` (optionally limiting rows) and
+- `spi_exec(query [, limit])`: execute `query` (optionally limiting rows) and
   return a result resource. The call runs in a subtransaction that is rolled
   back automatically if the query raises an error.
-- `spi_fetch_row(result)` — return the next row as an associative array, or
+- `spi_fetch_row(result)`: return the next row as an associative array, or
   `false` when the rows are exhausted.
-- `spi_processed(result)` — number of rows the query produced.
-- `spi_status(result)` — the SPI status code as a string.
-- `spi_rewind(result)` — restart iteration from the first row.
+- `spi_processed(result)`: number of rows the query produced.
+- `spi_status(result)`: the SPI status code as a string.
+- `spi_rewind(result)`: restart iteration from the first row.
 
 ```sql
 CREATE FUNCTION sum_series(n integer) RETURNS integer LANGUAGE plphp AS $$
@@ -314,14 +314,14 @@ $$;
 first row. For result sets too large for that, open a cursor instead and
 fetch rows one at a time:
 
-- `spi_query(query)` — open a cursor for `query` and return its name (a
+- `spi_query(query)`: open a cursor for `query` and return its name (a
   string).
-- `spi_fetchrow(cursor)` — return the next row as an associative array, or
+- `spi_fetchrow(cursor)`: return the next row as an associative array, or
   `false` when the cursor is exhausted (the cursor is then closed
   automatically).
-- `spi_cursor_close(cursor)` — close a cursor early, before exhausting it.
+- `spi_cursor_close(cursor)`: close a cursor early, before exhausting it.
   Closing an unknown or already-closed cursor is harmless.
-- `spi_each(query, callable)` — run `query` and invoke `callable($row)` once
+- `spi_each(query, callable)`: run `query` and invoke `callable($row)` once
   per row, streaming over a cursor; return `false` from the callable to stop
   early. Returns the number of rows processed. The inline-loop equivalent of
   PL/Tcl's `spi_exec -array a $query { body }`.
@@ -348,15 +348,15 @@ For queries you run repeatedly, prepare a plan once and execute it with
 parameters. `spi_prepare` takes the query text followed by the SQL type name of
 each `$1`, `$2`, ... placeholder and returns a plan resource:
 
-- `spi_prepare(query, type1, type2, ...)` — returns a plan.
-- `spi_exec_prepared(plan, arg1, arg2, ...)` — execute the plan; returns a
+- `spi_prepare(query, type1, type2, ...)`: returns a plan.
+- `spi_exec_prepared(plan, arg1, arg2, ...)`: execute the plan; returns a
   result resource just like `spi_exec` (use `spi_fetch_row`, `spi_processed`,
   etc.).
-- `spi_query_prepared(plan, arg1, arg2, ...)` — open a *cursor* for the plan
+- `spi_query_prepared(plan, arg1, arg2, ...)`: open a *cursor* for the plan
   and return its name; fetch rows with `spi_fetchrow` (see
   [Streaming large result sets](#streaming-large-result-sets-cursors)).
   Before PL/php 2.1 this was an alias of `spi_exec_prepared`.
-- `spi_freeplan(plan)` — release the plan when you are done with it.
+- `spi_freeplan(plan)`: release the plan when you are done with it.
 
 ```sql
 CREATE FUNCTION lookup(int) RETURNS text LANGUAGE plphp AS $$
@@ -376,8 +376,8 @@ better performance; free it with `spi_freeplan` when no longer needed.
 Inside a **procedure** invoked by `CALL` in a non-atomic context, you can commit
 or roll back the current transaction:
 
-- `spi_commit()` — commit the current transaction and begin a new one.
-- `spi_rollback()` — roll back the current transaction and begin a new one.
+- `spi_commit()`: commit the current transaction and begin a new one.
+- `spi_rollback()`: roll back the current transaction and begin a new one.
 
 ```sql
 CREATE PROCEDURE import_batch() LANGUAGE plphp AS $$
@@ -420,7 +420,7 @@ A *database* error inside the block (for example a constraint violation
 surfaced by `spi_exec`) likewise rolls the subtransaction back and propagates
 as a catchable [`PgError`](#errors-and-exceptions). Note that each SPI call
 already runs in its own subtransaction, so `try`/`catch` around a single call
-does not need `subtransaction()` — use it to make a *group* of statements
+does not need `subtransaction()`; use it to make a *group* of statements
 succeed or fail atomically.
 
 ## Quoting helpers
@@ -428,10 +428,10 @@ succeed or fail atomically.
 When building SQL dynamically, quote values and identifiers so the result is
 safe and syntactically correct:
 
-- `quote_literal(string)` — quote a value as an SQL string literal.
-- `quote_nullable(value)` — like `quote_literal`, but a PHP `null` becomes the
+- `quote_literal(string)`: quote a value as an SQL string literal.
+- `quote_nullable(value)`: like `quote_literal`, but a PHP `null` becomes the
   SQL keyword `NULL`.
-- `quote_ident(name)` — quote a string for use as an SQL identifier (only when
+- `quote_ident(name)`: quote a string for use as an SQL identifier (only when
   needed).
 
 ```php
@@ -481,7 +481,7 @@ session.
 **Modules.** If a table named `plphp_modules(modname text, modseq int, modsrc
 text)` exists, its rows are loaded (ordered by `modname`, `modseq`) when the
 interpreter initializes. Any functions or classes the code defines become
-available to every PL/php function in the session — a convenient place for a
+available to every PL/php function in the session, a place for a
 shared library of helpers:
 
 ```sql
@@ -501,7 +501,7 @@ SET plphp.start_proc = 'my_setup';
 ```
 
 **on_init.** The `plphp.on_init` setting holds a snippet of *PHP source* to
-execute at initialization — the counterpart of `plperl.on_init`. Use it for
+execute at initialization, the counterpart of `plperl.on_init`. Use it for
 setup that doesn't warrant a modules table, such as defining a helper or
 setting an include path:
 
@@ -519,10 +519,10 @@ an invalid body is rejected with the PHP parse error.
 
 **Database errors are catchable.** Every database error raised by an SPI call
 (`spi_exec`, `spi_fetchrow`, `spi_commit`, ...) is thrown as a **`PgError`**
-exception — the counterpart of PL/Perl's `eval`-trappable errors and PL/Tcl's
+exception, the counterpart of PL/Perl's `eval`-trappable errors and PL/Tcl's
 `catch`. The failed call's subtransaction has already been rolled back when
 you catch it, so the session is in a consistent state and the function can
-simply continue:
+continue:
 
 ```sql
 CREATE FUNCTION upsertish(int) RETURNS text LANGUAGE plphp AS $$
@@ -541,12 +541,12 @@ $$;
 
 `PgError extends Exception` and adds:
 
-- `getSQLState()` — the five-character SQLSTATE code (e.g. `23505`).
-- `getDetail()` / `getHint()` — the error's DETAIL and HINT, or `null`.
+- `getSQLState()`: the five-character SQLSTATE code (e.g. `23505`).
+- `getDetail()` / `getHint()`: the error's DETAIL and HINT, or `null`.
 
 `pg_raise('error', ...)` and `elog('ERROR', ...)` also throw a `PgError`
-(SQLSTATE `P0001`, like PL/pgSQL's `RAISE`). An **uncaught** `PgError` — or
-any other uncaught PHP exception, such as a `TypeError` — is reported as a
+(SQLSTATE `P0001`, like PL/pgSQL's `RAISE`). An **uncaught** `PgError`, or
+any other uncaught PHP exception such as a `TypeError`, is reported as a
 PostgreSQL `ERROR`, aborting the statement. PHP deprecation notices (such as
 the legacy `"${var}"` string interpolation) are surfaced as PostgreSQL
 `NOTICE`s and are not fatal.
@@ -556,7 +556,7 @@ the legacy `"${var}"` string interpolation) are surfaced as PostgreSQL
 PL/php is an **untrusted** language. Historically the trusted variant restricted
 user code using PHP's `safe_mode`, but **`safe_mode` was removed in PHP 5.4**, so
 on modern PHP nothing sandboxes a PL/php function: it can do whatever the
-PostgreSQL server's operating-system user can do — read and write files, open
+PostgreSQL server's operating-system user can do: read and write files, open
 network connections, run shell commands, and so on.
 
 Accordingly, the language is created without the `TRUSTED` attribute: the

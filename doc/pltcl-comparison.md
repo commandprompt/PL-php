@@ -32,7 +32,7 @@ its rationale.
 | `elog level msg`              | `elog(level, msg)` | DEBUG/LOG/INFO/NOTICE/WARNING/ERROR |
 | `subtransaction { body }`     | `subtransaction(callable, …)` **added** | |
 | `commit` / `rollback`         | `spi_commit` / `spi_rollback` | |
-| — (no transform support)      | `jsonb_plphp` **added** | `TRANSFORM FOR TYPE jsonb`; PL/Tcl has no transforms at all |
+| (no transform support)        | `jsonb_plphp` **added** | `TRANSFORM FOR TYPE jsonb`; PL/Tcl has no transforms at all |
 
 ## The one remaining gap
 

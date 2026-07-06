@@ -17,7 +17,7 @@
 
 PL/php is a procedural-language handler that lets you write database functions in
 **PHP**, stored and executed inside PostgreSQL. You get the convenience of PHP's
-standard library with the full power of a native PostgreSQL function — plain
+standard library as a native PostgreSQL function: plain
 functions, set-returning functions, triggers, event triggers, and procedures
 with transaction control.
 
@@ -123,7 +123,7 @@ regression suite with `make installcheck`.
 > [!WARNING]
 > **PL/php is an untrusted language.** On modern PHP there is no sandbox
 > (`safe_mode` was removed in PHP 5.4), so a PL/php function can do anything the
-> PostgreSQL server's operating-system user can — read and write files, open
+> PostgreSQL server's operating-system user can: read and write files, open
 > network connections, run shell commands, and so on.
 
 The language is created **without** the `TRUSTED` attribute, so only superusers
@@ -133,8 +133,8 @@ roles you would trust with the server's OS account.
 ## Documentation
 
 - [Language reference](doc/plphp.md)
-- [Cookbook — tested recipes](doc/cookbook.md)
-- [Benchmarks](doc/benchmarks.md) — within a few percent of PL/pgSQL on scalar work; 1.75× PL/Perl on row loops
+- [Cookbook: tested recipes](doc/cookbook.md)
+- [Benchmarks](doc/benchmarks.md): within a few percent of PL/pgSQL on scalar work; 1.75x PL/Perl on row loops
 - [Installation](INSTALL)
 - [Changelog](CHANGELOG.md)
 - [PL/php vs PL/Perl](doc/plperl-comparison.md)
@@ -143,4 +143,4 @@ roles you would trust with the server's OS account.
 ## License
 
 PL/php is copyright © Command Prompt, Inc. and is distributed under a permissive,
-PostgreSQL-style license — see the notice at the top of each source file.
+PostgreSQL-style license; see the notice at the top of each source file.

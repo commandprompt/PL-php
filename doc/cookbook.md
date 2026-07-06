@@ -2,7 +2,7 @@
 
 Practical, self-contained recipes showing where PL/php earns its keep over
 `plpgsql`: PHP's standard library. Everything in the first section is run by
-the `cookbook` regression test on every supported PostgreSQL version — if it's
+the `cookbook` regression test on every supported PostgreSQL version: if it's
 on this page, it works.
 
 The embedded interpreter ships with `json`, `pcre`, `openssl`, `sodium`,
@@ -54,7 +54,7 @@ is available too if libargon2 was compiled in.
 
 ### HMAC-signed tokens
 
-Issue and verify tamper-proof tokens with a server-side secret — no extension
+Issue and verify tamper-proof tokens with a server-side secret, no extension
 needed:
 
 ```sql
@@ -80,7 +80,7 @@ otherwise, and uses constant-time `hash_equals`.
 
 ### Reshape JSON recursively
 
-Deeply redact keys anywhere in a document — awkward with `jsonb` operators,
+Deeply redact keys anywhere in a document. Awkward with `jsonb` operators,
 three lines of PHP:
 
 ```sql
@@ -185,7 +185,7 @@ CALL process_queue(1000);
 
 ### Stream a big scan, stop early
 
-A cursor (`spi_query`) reads rows one at a time in constant memory — close it
+A cursor (`spi_query`) reads rows one at a time in constant memory. Close it
 as soon as you have your answer instead of materializing millions of rows:
 
 ```sql
@@ -206,7 +206,7 @@ $$;
 
 ### Read a CSV file into rows
 
-Server-side file ETL without `COPY`'s format restrictions — `fgetcsv` handles
+Server-side file ETL without `COPY`'s format restrictions: `fgetcsv` handles
 quoting/escaping, and `RETURNS TABLE` + `return_next(array)` does the rest:
 
 ```sql
@@ -257,10 +257,10 @@ SELECT gunz(gz(long_text)) = long_text FROM documents;   -- true
 ```
 
 (PostgreSQL TOAST already compresses transparently; this is for when you want
-the compressed bytes explicitly — to hand to a client, or with `SET STORAGE
+the compressed bytes explicitly, to hand to a client or use with `SET STORAGE
 EXTERNAL`.)
 
-## Doc-only recipes (side effects — use with care)
+## Doc-only recipes (side effects: use with care)
 
 These work but are deliberately not in the regression test: they touch the
 outside world, and they run **inside your transaction on the backend**. A slow
@@ -270,7 +270,7 @@ write to a queue table instead and let a worker drain it.
 
 ### HTTP webhook from a trigger
 
-No curl needed — PHP's HTTP stream wrapper does POSTs, and a short timeout is
+No curl needed: PHP's HTTP stream wrapper does POSTs, and a short timeout is
 mandatory:
 
 ```sql
@@ -300,7 +300,7 @@ Requires a working `sendmail` on the database server.
 ### Slugify with transliteration
 
 `iconv`'s `//TRANSLIT` is locale-dependent, so results can vary between
-systems — good for display, not for keys you need to be stable everywhere:
+systems: good for display, not for keys that must be stable everywhere:
 
 ```sql
 CREATE FUNCTION slugify(text) RETURNS text LANGUAGE plphp STRICT AS $$
