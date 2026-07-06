@@ -104,3 +104,27 @@ SELECT cov_catch();
 DO $$ pg_raise('error', 'do block runtime error'); $$ LANGUAGE plphp;
 
 DROP TABLE cov_t;
+
+-- Redefinition churn: each CREATE OR REPLACE (and ALTER) discards the old
+-- compiled function and its memory context and recompiles on next use
+CREATE FUNCTION churn() RETURNS int LANGUAGE plphp AS $$ return 0; $$;
+SELECT churn();
+DO $$
+	for ($i = 1; $i <= 50; $i++) {
+		spi_exec("create or replace function churn() returns int language plphp as 'return $i;'");
+		$r = spi_exec("select churn() as v");
+		$row = spi_fetch_row($r);
+		if ($row['v'] != $i)
+			pg_raise('error', "recompile returned {$row['v']}, expected $i");
+	}
+	pg_raise('notice', 'redefined 50 times, all correct');
+$$ LANGUAGE plphp;
+-- ALTER also invalidates the cached compilation
+ALTER FUNCTION churn() COST 42;
+SELECT churn();
+-- a body that fails to compile poisons the cache entry; fixing it recovers
+CREATE OR REPLACE FUNCTION churn() RETURNS int LANGUAGE plphp AS $$ return $$;
+SELECT churn();
+CREATE OR REPLACE FUNCTION churn() RETURNS int LANGUAGE plphp AS $$ return 99; $$;
+SELECT churn();
+DROP FUNCTION churn();

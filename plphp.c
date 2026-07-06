@@ -171,6 +171,7 @@ typedef enum pl_type
 typedef struct plphp_proc_desc
 {
 	char	   *proname;
+	MemoryContext fn_cxt;		/* holds this struct and all its data */
 	TransactionId fn_xmin;
 	CommandId	fn_cmin;
 	bool		trusted;
@@ -258,24 +259,16 @@ static bool is_valid_php_identifier(char *name);
 static char *plphp_pop_exception_message(void);
 
 /*
- * FIXME -- this comment is quite misleading actually, which is not surprising
- * since it came verbatim from PL/pgSQL.  Rewrite memory handling here someday
- * and remove it.
- *
- * This routine is a crock, and so is everyplace that calls it.  The problem
- * is that the cached form of plphp functions/queries is allocated permanently
- * (mostly via malloc()) and never released until backend exit.  Subsidiary
- * data structures such as fmgr info records therefore must live forever
- * as well.  A better implementation would store all this stuff in a per-
- * function memory context that could be reclaimed at need.  In the meantime,
- * fmgr_info_cxt must be called specifying TopMemoryContext so that whatever
- * it might allocate, and whatever the eventual function might allocate using
- * fn_mcxt, will live forever too.
+ * Each compiled function's descriptor and all its subsidiary data (name,
+ * fmgr info records, ...) live in a private memory context, prodesc->fn_cxt,
+ * created as a child of TopMemoryContext.  When the pg_proc tuple changes
+ * (CREATE OR REPLACE), the whole context is deleted and the function is
+ * compiled afresh, so nothing accumulates across redefinitions.
  */
 static void
-perm_fmgr_info(Oid functionId, FmgrInfo *finfo)
+perm_fmgr_info(Oid functionId, FmgrInfo *finfo, MemoryContext cxt)
 {
-	fmgr_info_cxt(functionId, finfo, TopMemoryContext);
+	fmgr_info_cxt(functionId, finfo, cxt);
 }
 
 /*
@@ -1398,7 +1391,8 @@ plphp_func_handler(FunctionCallInfo fcinfo, plphp_proc_desc *desc)
 		retTypeTup = SearchSysCache1(TYPEOID,
 									 ObjectIdGetDatum(get_fn_expr_rettype(fcinfo->flinfo)));
 		retTypeStruct = (Form_pg_type) GETSTRUCT(retTypeTup);
-		perm_fmgr_info(retTypeStruct->typinput, &(desc->result_in_func));
+		perm_fmgr_info(retTypeStruct->typinput, &(desc->result_in_func),
+						   desc->fn_cxt);
 		desc->result_typioparam = retTypeStruct->typelem;
 		ReleaseSysCache(retTypeTup);
 	}
@@ -1674,15 +1668,16 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 			(prodesc->fn_xmin == HeapTupleHeaderGetXmin(procTup->t_data) &&
 			 prodesc->fn_cmin == HeapTupleHeaderGetRawCommandId(procTup->t_data));
 
-		/* We need to delete the old entry */
+		/* The function was redefined: throw the old version away */
 		if (!uptodate)
 		{
 			/*
-			 * FIXME -- use a per-function memory context and fix this
-			 * stuff for good
+			 * Remove the cache entry first, so that if the recompilation
+			 * below errors out the cache does not point at freed memory.
 			 */
-			free(prodesc->proname);
-			free(prodesc);
+			zend_hash_str_del(Z_ARRVAL_P(plphp_proc_array), internal_proname,
+							  strlen(internal_proname));
+			MemoryContextDelete(prodesc->fn_cxt);
 			prodesc = NULL;
 		}
 	}
@@ -1694,11 +1689,12 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 		Datum		prosrcdatum;
 		bool		isnull;
 		char	   *proc_source;
-		char	   *complete_proc_source;
-		char	   *pointer = NULL;
-		char	   *aliases = NULL;
-		char	   *out_aliases = NULL;
-		char	   *out_return_str = NULL;
+		char	   * volatile complete_proc_source = NULL;
+		char	   *ptrstr = NULL;
+		char	   * volatile aliases = NULL;
+		char	   * volatile out_aliases = NULL;
+		char	   * volatile out_return_str = NULL;
+		MemoryContext fn_cxt;
 		int16	typlen;
 		bool	typbyval;
 		char	typalign,
@@ -1707,40 +1703,32 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 		Oid		typioparam,
 				typinput,
 				typoutput;
+
 		/*
-		 * Allocate a new procedure description block
+		 * The descriptor and everything hanging off it live in their own
+		 * memory context, deleted wholesale when the function is redefined
+		 * (or if compilation fails below).
 		 */
-		prodesc = (plphp_proc_desc *) malloc(sizeof(plphp_proc_desc));
-		if (!prodesc)
-			ereport(ERROR,
-					(errcode(ERRCODE_OUT_OF_MEMORY),
-					 errmsg("out of memory")));
-
-		MemSet(prodesc, 0, sizeof(plphp_proc_desc));
-		prodesc->proname = strdup(internal_proname);
-		if (!prodesc->proname)
-		{
-			free(prodesc);
-			ereport(ERROR,
-					(errcode(ERRCODE_OUT_OF_MEMORY),
-					 errmsg("out of memory")));
-		}
-
+		fn_cxt = AllocSetContextCreate(TopMemoryContext,
+									   "PL/php function",
+									   ALLOCSET_SMALL_SIZES);
+		prodesc = (plphp_proc_desc *)
+			MemoryContextAllocZero(fn_cxt, sizeof(plphp_proc_desc));
+		prodesc->fn_cxt = fn_cxt;
+		prodesc->proname = MemoryContextStrdup(fn_cxt, internal_proname);
 		prodesc->fn_xmin = HeapTupleHeaderGetXmin(procTup->t_data);
 		prodesc->fn_cmin = HeapTupleHeaderGetRawCommandId(procTup->t_data);
 
+		PG_TRY();
+		{
 		/*
 		 * Look up the pg_language tuple by Oid
 		 */
 		langTup = SearchSysCache1(LANGOID,
 								  ObjectIdGetDatum(procStruct->prolang));
 		if (!HeapTupleIsValid(langTup))
-		{
-			free(prodesc->proname);
-			free(prodesc);
 			elog(ERROR, "cache lookup failed for language %u",
 					   procStruct->prolang);
-		}
 		langStruct = (Form_pg_language) GETSTRUCT(langTup);
 		prodesc->trusted = langStruct->lanpltrusted;
 		ReleaseSysCache(langTup);
@@ -1783,8 +1771,6 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 				}
 				else if (procStruct->prorettype == TRIGGEROID)
 				{
-					free(prodesc->proname);
-					free(prodesc);
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("trigger functions may only be called "
@@ -1792,8 +1778,6 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 				}
 				else
 				{
-					free(prodesc->proname);
-					free(prodesc);
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("plphp functions cannot return type %s",
@@ -1819,7 +1803,8 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 					prodesc->ret_type |= PL_ARRAY;
 			}
 
-			perm_fmgr_info(typinput, &(prodesc->result_in_func));
+			perm_fmgr_info(typinput, &(prodesc->result_in_func),
+							   prodesc->fn_cxt);
 			prodesc->result_typioparam = typioparam;
 
 			/* Deal with named arguments, OUT, IN/OUT and TABLE arguments */
@@ -1920,7 +1905,8 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 									 &typdelim,
 									 &typioparam,
 									 &typoutput);
-					perm_fmgr_info(typoutput, &(prodesc->arg_out_func[i]));
+					perm_fmgr_info(typoutput, &(prodesc->arg_out_func[i]),
+								   prodesc->fn_cxt);
 					prodesc->arg_typioparam[i] = typioparam;
 					prodesc->arg_is_array[i] =
 						OidIsValid(get_element_type(argtypes[i]));
@@ -2050,10 +2036,18 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 				
 		zend_hash_str_del(CG(function_table), prodesc->proname,
 						  strlen(prodesc->proname));
+		}
+		PG_CATCH();
+		{
+			/* nothing points at the new descriptor yet: reclaim it */
+			MemoryContextDelete(fn_cxt);
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
 
-		pointer = (char *) palloc(64);
-		sprintf(pointer, "%p", (void *) prodesc);
-		add_assoc_string(plphp_proc_array, internal_proname, (char *) pointer);
+		ptrstr = (char *) palloc(64);
+		sprintf(ptrstr, "%p", (void *) prodesc);
+		add_assoc_string(plphp_proc_array, internal_proname, ptrstr);
 
 		if (zend_eval_string(complete_proc_source, NULL,
 							 "plphp function source") == FAILURE)
@@ -2071,12 +2065,12 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 		}
 
 		if (aliases)
-			pfree(aliases);
+			pfree((char *) aliases);
 		if (out_aliases)
-			pfree(out_aliases);
+			pfree((char *) out_aliases);
 		if (out_return_str)
-			pfree(out_return_str);
-		pfree(complete_proc_source);
+			pfree((char *) out_return_str);
+		pfree((char *) complete_proc_source);
 	}
 
 	ReleaseSysCache(procTup);
@@ -2121,7 +2115,7 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 													   (fcinfo->flinfo, j)));
 			typeStruct = (Form_pg_type) GETSTRUCT(typeTup);
 			perm_fmgr_info(typeStruct->typoutput,
-						   &(desc->arg_out_func[i]));
+						   &(desc->arg_out_func[i]), desc->fn_cxt);
 			desc->arg_typioparam[i] = typeStruct->typelem;
 			desc->arg_is_array[i] = (typeStruct->typlen == -1 &&
 									 OidIsValid(typeStruct->typelem));
