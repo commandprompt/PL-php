@@ -47,6 +47,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   suite against a `libasan`-preloaded server, catching memory-safety bugs
   mechanically (new `ASAN_FLAGS` hook in the Makefiles).
 
+## [Unreleased]
+
+### Added
+
+- **A reproducible benchmark suite** (`bench/`) and published results
+  (`doc/benchmarks.md`) comparing PL/php with PL/pgSQL and PL/Perl: within a
+  few percent on scalar and string work, 1.75× PL/Perl on SPI row loops.
+
 ## [2.3.0] — 2026-07-06
 
 ### Added
