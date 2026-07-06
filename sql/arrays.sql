@@ -124,3 +124,77 @@ select arr_in_comp(row('x', array[5, 6, 7])::with_arr);
 drop function arr_in_row(), arr_in_cursor(), arr_in_comp(with_arr), arr_trig();
 drop type with_arr;
 drop table arrt;
+
+-- composite conversion: composite columns/fields/elements are associative
+-- arrays in both directions
+create type arr_addr as (street text, city text);
+create type arr_person as (name text, home arr_addr, tags text[]);
+create table arr_folks (id int, who arr_person);
+insert into arr_folks values
+  (1, row('J''s "Place"', row('1 Main, Apt (2)', 'Olympia')::arr_addr,
+          array['a', 'b,c'])::arr_person);
+
+-- composite column in a row: nested composite and array fields convert
+create function arr_rec_peek() returns text language plphp as $$
+	$r = spi_exec("select * from arr_folks");
+	$row = spi_fetch_row($r);
+	$w = $row['who'];
+	return gettype($w) . " | " . $w['name'] . " | " . $w['home']['city']
+		. " | " . $w['tags'][1] . " | " . gettype($w['tags']);
+$$;
+select arr_rec_peek();
+
+-- composite argument (with nesting)
+create function arr_rec_arg(p arr_person) returns text language plphp as $$
+	return $args[0]['home']['street'] . " / " . count($args[0]['tags']);
+$$;
+select arr_rec_arg(row('X', row('5 Oak', 'Tacoma')::arr_addr, array['q'])::arr_person);
+
+-- composites inside an array argument
+create function arr_rec_elems(addrs arr_addr[]) returns text language plphp as $$
+	return $args[0][1]['city'];
+$$;
+select arr_rec_elems(array[row('a', 'CityA')::arr_addr, row('b', 'City,B()')::arr_addr]);
+
+-- the reverse: build a nested composite from associative arrays
+create function arr_rec_make() returns arr_person language plphp as $$
+	return array(
+		'name' => 'He said "hi"',
+		'home' => array('street' => '9 Elm, S(2)', 'city' => 'B\\C'),
+		'tags' => array('x', 'y z')
+	);
+$$;
+select * from arr_rec_make();
+select (arr_rec_make()).home.city, (arr_rec_make()).tags[2];
+
+-- trigger MODIFY through a composite column
+create function arr_rec_trig() returns trigger language plphp as $$
+	$_TD['new']['who']['home']['city'] = 'Changed';
+	return 'MODIFY';
+$$;
+create trigger arr_folks_trg before insert on arr_folks
+	for each row execute procedure arr_rec_trig();
+insert into arr_folks values
+  (2, row('K', row('7 Pine', 'Old')::arr_addr, array['z'])::arr_person);
+select (who).home.city from arr_folks where id = 2;
+drop trigger arr_folks_trg on arr_folks;
+
+-- NULL fields inside composites survive both directions
+create function arr_rec_nulls(p arr_addr) returns arr_addr language plphp as $$
+	pg_raise('notice', 'street is ' . ($args[0]['street'] === null ? 'null' : 'set'));
+	return array('street' => null, 'city' => $args[0]['city']);
+$$;
+select * from arr_rec_nulls(row(NULL, 'Salem')::arr_addr);
+
+drop function arr_rec_peek(), arr_rec_arg(arr_person), arr_rec_elems(arr_addr[]),
+              arr_rec_make(), arr_rec_trig(), arr_rec_nulls(arr_addr);
+drop table arr_folks;
+drop type arr_person, arr_addr;
+
+-- anycompatible polymorphics (PostgreSQL 13+)
+create function arr_first_compat(anycompatiblearray) returns anycompatible
+language plphp as $$
+	return $args[0][0];
+$$;
+select arr_first_compat(array[7, 8, 9]);
+select arr_first_compat(array['x', 'y']);

@@ -88,10 +88,12 @@ function. In practice:
 | arrays (e.g. `int[]`)          | PHP array            | PHP array               |
 | composite / row / record       | associative array    | associative array       |
 
-Array-typed *columns* inside rows — in `$_TD['new']`/`['old']`, rows from
-`spi_fetch_row`/`spi_fetchrow`, and composite arguments' fields — also arrive
-as PHP arrays, and can be assigned back as arrays (e.g. before a trigger
-`MODIFY`).
+Array- and composite-typed *columns* inside rows — in `$_TD['new']`/`['old']`,
+rows from `spi_fetch_row`/`spi_fetchrow`, and composite arguments' fields —
+also convert structurally, all the way down: arrays become PHP arrays,
+composites become associative arrays, in both directions (so a trigger can
+`MODIFY` a nested composite field, and a function can return one built from
+plain PHP arrays).
 | NULL                           | unset / null         | `return;` or `null`     |
 
 Arrays map naturally, including multidimensional arrays:
@@ -149,6 +151,10 @@ SELECT * FROM make_tuple('answer', 42);   -- answer | 42
 
 Functions declared `RETURNS record` must be called with a column definition
 list, e.g. `SELECT * FROM f() AS (a int, b text)`.
+
+Nesting converts recursively in both directions: a composite containing
+arrays or other composites arrives as nested PHP arrays, and can be returned
+the same way.
 
 ## Arguments
 

@@ -294,15 +294,14 @@ create function arr_first_compat(anycompatiblearray) returns anycompatible
 language plphp as $$
 	return $args[0][0];
 $$;
+ERROR:  type anycompatiblearray does not exist
 select arr_first_compat(array[7, 8, 9]);
- arr_first_compat 
-------------------
-                7
-(1 row)
-
+ERROR:  function arr_first_compat(integer[]) does not exist
+LINE 1: select arr_first_compat(array[7, 8, 9]);
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
 select arr_first_compat(array['x', 'y']);
- arr_first_compat 
-------------------
- x
-(1 row)
-
+ERROR:  function arr_first_compat(text[]) does not exist
+LINE 1: select arr_first_compat(array['x', 'y']);
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.

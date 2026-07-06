@@ -185,7 +185,7 @@ typedef struct plphp_proc_desc
 	int			n_mixed_args;
 	FmgrInfo	arg_out_func[FUNC_MAX_ARGS];
 	Oid			arg_typioparam[FUNC_MAX_ARGS];
-	bool		arg_is_array[FUNC_MAX_ARGS];
+	Oid			arg_elemtype[FUNC_MAX_ARGS];	/* element type, or 0 */
 	Oid			arg_transform[FUNC_MAX_ARGS];	/* FromSQL transform fn, or 0 */
 	Oid			ret_transform;					/* ToSQL transform fn, or 0 */
 	char		arg_typtype[FUNC_MAX_ARGS];
@@ -1840,7 +1840,12 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 				if ((procStruct->prorettype == VOIDOID) ||
 					(procStruct->prorettype == RECORDOID) ||
 					(procStruct->prorettype == ANYELEMENTOID) ||
-					(procStruct->prorettype == ANYARRAYOID))
+					(procStruct->prorettype == ANYARRAYOID) ||
+#if PG_VERSION_NUM >= 130000
+					(procStruct->prorettype == ANYCOMPATIBLEOID) ||
+					(procStruct->prorettype == ANYCOMPATIBLEARRAYOID) ||
+#endif
+					false)
 				{
 					/* okay */
 					prodesc->ret_type |= PL_PSEUDO;
@@ -1870,7 +1875,11 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 				prodesc->ret_type |= PL_TUPLE;
 			}
 
-			if (procStruct->prorettype == ANYARRAYOID)
+			if (procStruct->prorettype == ANYARRAYOID
+#if PG_VERSION_NUM >= 130000
+				|| procStruct->prorettype == ANYCOMPATIBLEARRAYOID
+#endif
+				)
 				prodesc->ret_type |= PL_ARRAY;
 			else
 			{
@@ -1984,8 +1993,7 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 					perm_fmgr_info(typoutput, &(prodesc->arg_out_func[i]),
 								   prodesc->fn_cxt);
 					prodesc->arg_typioparam[i] = typioparam;
-					prodesc->arg_is_array[i] =
-						OidIsValid(get_element_type(argtypes[i]));
+					prodesc->arg_elemtype[i] = get_element_type(argtypes[i]);
 				}
 				if (aliases && argnames[i][0] != '\0')
 				{
@@ -2193,8 +2201,8 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 			perm_fmgr_info(typeStruct->typoutput,
 						   &(desc->arg_out_func[i]), desc->fn_cxt);
 			desc->arg_typioparam[i] = typeStruct->typelem;
-			desc->arg_is_array[i] = (typeStruct->typlen == -1 &&
-									 OidIsValid(typeStruct->typelem));
+			desc->arg_elemtype[i] = (typeStruct->typlen == -1) ?
+				typeStruct->typelem : InvalidOid;
 			ReleaseSysCache(typeTup);
 		}
 
@@ -2259,11 +2267,12 @@ plphp_func_build_args(plphp_proc_desc *desc, FunctionCallInfo fcinfo)
 				 */
 				tmp = OutputFunctionCall(&(desc->arg_out_func[i]),
 										 PLPHP_ARG_VALUE(fcinfo, j));
-				if (desc->arg_is_array[i])
+				if (OidIsValid(desc->arg_elemtype[i]))
 				{
 					zval	   *hashref;
 
-					hashref = plphp_convert_from_pg_array(tmp);
+					hashref = plphp_convert_from_pg_array(tmp,
+														  desc->arg_elemtype[i]);
 					add_next_index_zval(retval, hashref);
 					efree(hashref);
 				}
