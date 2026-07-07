@@ -16,6 +16,7 @@ intentionally out of scope, with the rationale given.
 | `RETURNS TABLE` / OUT / INOUT arguments  | ✅ | ✅ | PL/php also supports named parameters, which PL/Perl does not |
 | Trigger functions (`$_TD`)              | ✅ | ✅ | |
 | Session-shared data                     | `%_SHARED` | `$_SHARED` | |
+| **Private per-function data**           | ❌ | `$_SD` **added** | like PL/Python's `SD`; PL/Perl has no per-function store |
 | **Anonymous code blocks (`DO`)**        | ✅ | ✅ **added** | `DO $$ ... $$ LANGUAGE plphp` |
 | **Procedures with transaction control** | ✅ | ✅ **added** | `CALL` a `PROCEDURE`; `spi_commit`/`spi_rollback` in a non-atomic context |
 | Trusted (sandboxed) variant             | `plperl` (Safe.pm) | ❌ by design | PHP's `safe_mode` was removed in 5.4; PL/php is untrusted/superuser-only (see [Security](plphp.md#security)) |

@@ -5,6 +5,23 @@ All notable changes to PL/php are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Private per-function data: `$_SD`.** Each function now has an `$_SD`
+  associative array that persists across calls to that function within a
+  session and is private to it, the per-function counterpart to the
+  session-global `$_SHARED`. The pair mirrors PL/Python's `SD` and `GD`. `$_SD`
+  starts empty and is reset when the function is redefined. Typical use is
+  caching a prepared plan once per session.
+- **`bytea` transform (`bytea_plphp`).** A new `CREATE EXTENSION bytea_plphp`
+  adds `TRANSFORM FOR TYPE bytea`, mapping a `bytea` to a raw, binary-safe PHP
+  string (the bytes themselves, not the `\x...` text form) and back, mirroring
+  PL/Python's `bytea` <-> `bytes`. Embedded NUL bytes survive the round trip,
+  which the default text path truncates. Applies in nested contexts like the
+  other transforms.
+
 ## [2.5.0] - 2026-07-06
 
 ### Added

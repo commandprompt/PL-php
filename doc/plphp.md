@@ -30,6 +30,7 @@ SAPI, non-thread-safe).
 - [Quoting helpers](#quoting-helpers)
 - [Messaging: elog and pg_raise](#messaging-elog-and-pg_raise)
 - [Shared data: `$_SHARED`](#shared-data-_shared)
+- [Private data: `$_SD`](#private-data-_sd)
 - [Session initialization: modules and start_proc](#session-initialization-modules-and-start_proc)
 - [Errors and exceptions](#errors-and-exceptions)
 - [Security](#security)
@@ -165,11 +166,35 @@ SELECT tags_upper('a=>x, b=>NULL');   -- "A"=>"X", "B"=>NULL
 Returning something other than an array, or a nested array as a value, is
 rejected with a clear error (hstore values are text or null).
 
+### Native bytea via the `bytea_plphp` transform
+
+By default a `bytea` value crosses the boundary in its text form (the
+`\x...` hex output, decoded again by `byteain` on the way back), which is not
+binary-safe: an embedded NUL truncates the value. The companion `bytea_plphp`
+extension maps `bytea` to a raw PHP string instead, mirroring PL/Python's
+`bytea` <-> `bytes`. With `TRANSFORM FOR TYPE bytea` the argument is the bytes
+themselves and a returned PHP string is stored verbatim, NULs and all.
+
+```sql
+CREATE EXTENSION bytea_plphp CASCADE;   -- pulls in plphp
+
+CREATE FUNCTION xor_byte(data bytea, mask int) RETURNS bytea
+LANGUAGE plphp TRANSFORM FOR TYPE bytea AS $$
+    $out = '';
+    for ($i = 0; $i < strlen($args[0]); $i++)
+        $out .= chr(ord($args[0][$i]) ^ $args[1]);
+    return $out;
+$$;
+```
+
+Only a PHP string maps to `bytea`; returning any other type (array, int, ...)
+is rejected with a clear error. A PHP `null` yields SQL `NULL`.
+
 ### Where transforms apply
 
-A declared transform (`jsonb` or `hstore`) is not limited to top-level
-arguments and results. For a function that declares it, the transform also
-converts values of that type **inside**:
+A declared transform (`jsonb`, `hstore`, or `bytea`) is not limited to
+top-level arguments and results. For a function that declares it, the transform
+also converts values of that type **inside**:
 
 - a composite argument's fields, and a composite/record result's fields;
 - `RETURNS SETOF` / `RETURNS TABLE` rows emitted with `return_next`;
@@ -548,6 +573,30 @@ CREATE FUNCTION get_shared(key text) RETURNS text LANGUAGE plphp AS $$
     return $_SHARED[$args[0]];
 $$;
 ```
+
+## Private data: `$_SD`
+
+`$_SD` is an associative array private to each function that persists across
+calls to that function within the same session. It is the per-function
+counterpart to the session-global `$_SHARED` (the pair mirrors PL/Python's `SD`
+and `GD`). Two different functions never share an `$_SD`; recursive calls of one
+function do. The array starts empty and is reset when the function is redefined
+with `CREATE OR REPLACE` or the session ends.
+
+The usual use is caching a prepared plan so it is built once per session without
+crowding the shared namespace:
+
+```sql
+CREATE FUNCTION log_event(msg text) RETURNS void LANGUAGE plphp AS $$
+    if (!isset($_SD['plan']))
+        $_SD['plan'] = spi_prepare('INSERT INTO log(msg) VALUES ($1)',
+                                   array('text'));
+    spi_exec_prepared($_SD['plan'], array($args[0]));
+$$;
+```
+
+A plain PHP `static` local works for the same purpose; `$_SD` is a ready-made,
+always-present dictionary and the name PL/Python users will reach for.
 
 ## Session initialization: modules and start_proc
 

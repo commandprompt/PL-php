@@ -13,6 +13,7 @@ its rationale.
 | DML trigger functions                   | ✅ | ✅ | `$_TD` in PL/php; `$TG_*`/`$NEW`/`$OLD` in PL/Tcl |
 | **Event trigger functions**             | ✅ | ✅ **added** | `RETURNS event_trigger`; `$_TD['event']`, `$_TD['tag']` |
 | Session-shared data                     | `GD` array | `$_SHARED` | |
+| **Private per-function data**           | ❌ | `$_SD` **added** | like PL/Python's `SD` (`$_SHARED` is the `GD` counterpart) |
 | Transaction control in procedures       | `commit`/`rollback` | `spi_commit`/`spi_rollback` | |
 | **Explicit subtransactions**            | `subtransaction {…}` | `subtransaction(callable, …)` **added** | |
 | **Module autoloading**                  | `pltcl_modules` + `unknown` | `plphp_modules` **added** | PL/php eager-loads all module rows at interpreter init |

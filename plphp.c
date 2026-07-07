@@ -132,6 +132,14 @@ PG_MODULE_MAGIC;
 #define PLPHP_ARG_VALUE(fcinfo, n)	((fcinfo)->arg[n])
 #endif
 
+/*
+ * Prologue prepended to every compiled function body.  It declares $_SD, a
+ * per-function static dictionary that persists across calls within a session
+ * (see the comment where the wrapper source is built).  The trailing space
+ * keeps it separate from a body that starts with a bare token.
+ */
+#define PLPHP_SD_PROLOGUE "static $_SD = array(); "
+
 /* Check the argument type to expect to accept an initial value */
 #define IS_ARGMODE_OUT(mode) ((mode) == PROARGMODE_OUT || \
 (mode) == PROARGMODE_TABLE)
@@ -2170,26 +2178,37 @@ plphp_compile_function(Oid fnoid, bool is_trigger, bool is_event_trigger)
 		complete_proc_source =
 			(char *) palloc(strlen(proc_source) +
 							strlen(internal_proname) +
-							(aliases ? strlen(aliases) : 0) + 
+							(aliases ? strlen(aliases) : 0) +
 							(out_aliases ? strlen(out_aliases) : 0) +
-							strlen("function  ($args, $argc){ } ") + 32 +
+							strlen("function  ($args, $argc){ } ") +
+							strlen(PLPHP_SD_PROLOGUE) + 32 +
 							(out_return_str ? strlen(out_return_str) : 0));
 
-		/* XXX Is this usage of sprintf safe? */
+		/*
+		 * XXX Is this usage of sprintf safe?
+		 *
+		 * Every wrapper opens with PLPHP_SD_PROLOGUE, which declares $_SD as a
+		 * function-local static array.  Because the wrapped function is compiled
+		 * once per session, the static persists across calls, giving each
+		 * function its own private dictionary (the session-global counterpart is
+		 * $_SHARED).  Recompiling the function (CREATE OR REPLACE) installs a
+		 * fresh op_array, so $_SD starts empty again.
+		 */
 		if (is_trigger)
 			/* $_TD is passed by reference so the function can modify NEW */
-			sprintf(complete_proc_source, "function %s(&$_TD){%s}",
-					internal_proname, proc_source);
+			sprintf(complete_proc_source, "function %s(&$_TD){%s%s}",
+					internal_proname, PLPHP_SD_PROLOGUE, proc_source);
 		else if (is_event_trigger)
-			sprintf(complete_proc_source, "function %s($_TD){%s}",
-					internal_proname, proc_source);
+			sprintf(complete_proc_source, "function %s($_TD){%s%s}",
+					internal_proname, PLPHP_SD_PROLOGUE, proc_source);
 		else
-			sprintf(complete_proc_source, 
-					"function %s($args, $argc){%s %s;%s; %s}",
-					internal_proname, 
+			sprintf(complete_proc_source,
+					"function %s($args, $argc){%s%s %s;%s; %s}",
+					internal_proname,
+					PLPHP_SD_PROLOGUE,
 					aliases ? aliases : "",
 					out_aliases ? out_aliases : "",
-					proc_source, 
+					proc_source,
 					out_return_str? out_return_str : "");
 					
 		elog(LOG, "complete_proc_source = %s",
