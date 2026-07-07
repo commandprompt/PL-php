@@ -213,18 +213,9 @@ SELECT ht_via_spi();
  string
 (1 row)
 
+-- Tear down. The CASCADE notice lists dependent objects in a
+-- version-dependent way (how PostgreSQL records TRANSFORM dependencies has
+-- changed across releases), so silence it to keep the test output stable.
+SET client_min_messages = warning;
 DROP EXTENSION hstore_plphp CASCADE;
-NOTICE:  drop cascades to 13 other objects
-DETAIL:  drop cascades to function ht_classes(hstore)
-drop cascades to function ht_upcase(hstore)
-drop cascades to function ht_build(integer)
-drop cascades to function ht_merge(hstore,hstore)
-drop cascades to function ht_empty(hstore)
-drop cascades to function ht_bad()
-drop cascades to function ht_nested()
-drop cascades to function ht_normalize()
-drop cascades to function ht_field(ht_rec)
-drop cascades to function ht_make(integer)
-drop cascades to function ht_shatter(hstore)
-drop cascades to function ht_table(integer)
-drop cascades to function ht_via_spi()
+RESET client_min_messages;

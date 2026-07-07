@@ -148,4 +148,9 @@ TRANSFORM FOR TYPE hstore LANGUAGE plphp AS $$
 $$;
 SELECT ht_via_spi();
 
+-- Tear down. The CASCADE notice lists dependent objects in a
+-- version-dependent way (how PostgreSQL records TRANSFORM dependencies has
+-- changed across releases), so silence it to keep the test output stable.
+SET client_min_messages = warning;
 DROP EXTENSION hstore_plphp CASCADE;
+RESET client_min_messages;
