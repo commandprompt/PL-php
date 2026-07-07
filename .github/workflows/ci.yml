@@ -60,6 +60,15 @@ jobs:
                PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config \
                PHP_CONFIG=php-config${{ matrix.php }} install
 
+      - name: Build and install hstore_plphp
+        run: |
+          make -C hstore_plphp \
+               PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config \
+               PHP_CONFIG=php-config${{ matrix.php }}
+          sudo make -C hstore_plphp \
+               PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config \
+               PHP_CONFIG=php-config${{ matrix.php }} install
+
       - name: Build and install bytea_plphp
         run: |
           make -C bytea_plphp \
@@ -92,6 +101,13 @@ jobs:
             make -C jsonb_plphp \
                  PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config installcheck
 
+      - name: Run the hstore_plphp regression tests
+        run: |
+          port=$(pg_lsclusters | awk '$1 == "${{ matrix.pg }}" && $2 == "main" { print $3 }')
+          sudo -u postgres env PGPORT=$port \
+            make -C hstore_plphp \
+                 PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config installcheck
+
       - name: Run the bytea_plphp regression tests
         run: |
           port=$(pg_lsclusters | awk '$1 == "${{ matrix.pg }}" && $2 == "main" { print $3 }')
@@ -104,6 +120,7 @@ jobs:
         run: |
           cat regression.diffs 2>/dev/null || true
           cat jsonb_plphp/regression.diffs 2>/dev/null || true
+          cat hstore_plphp/regression.diffs 2>/dev/null || true
           cat bytea_plphp/regression.diffs 2>/dev/null || true
 
   asan:
@@ -135,6 +152,10 @@ jobs:
           make -C jsonb_plphp PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config PHP_CONFIG=php-config8.3 \
                ASAN_FLAGS="-fsanitize=address -fno-omit-frame-pointer"
           sudo make -C jsonb_plphp PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config PHP_CONFIG=php-config8.3 \
+               ASAN_FLAGS="-fsanitize=address -fno-omit-frame-pointer" install
+          make -C hstore_plphp PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config PHP_CONFIG=php-config8.3 \
+               ASAN_FLAGS="-fsanitize=address -fno-omit-frame-pointer"
+          sudo make -C hstore_plphp PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config PHP_CONFIG=php-config8.3 \
                ASAN_FLAGS="-fsanitize=address -fno-omit-frame-pointer" install
           make -C bytea_plphp PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config PHP_CONFIG=php-config8.3 \
                ASAN_FLAGS="-fsanitize=address -fno-omit-frame-pointer"
@@ -168,6 +189,9 @@ jobs:
             make -C jsonb_plphp \
                  PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config installcheck
           sudo -u postgres env PGPORT=$port \
+            make -C hstore_plphp \
+                 PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config installcheck
+          sudo -u postgres env PGPORT=$port \
             make -C bytea_plphp \
                  PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config installcheck
 
@@ -178,4 +202,5 @@ jobs:
           sudo tail -50 /tmp/pg-asan.log 2>/dev/null || true
           cat regression.diffs 2>/dev/null || true
           cat jsonb_plphp/regression.diffs 2>/dev/null || true
+          cat hstore_plphp/regression.diffs 2>/dev/null || true
           cat bytea_plphp/regression.diffs 2>/dev/null || true
