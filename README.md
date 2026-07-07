@@ -52,9 +52,9 @@ SELECT hello('world');   -- Hello, world!
 | 🗄️ **Database access (SPI)** | `spi_exec`, `spi_fetch_row`, `spi_processed`, `spi_status`, `spi_rewind`. |
 | 📝 **Prepared statements** | `spi_prepare` / `spi_exec_prepared` / `spi_query_prepared` / `spi_freeplan`. |
 | 🔐 **Transaction control** | `spi_commit` / `spi_rollback` in procedures, plus `subtransaction()` blocks. |
-| 🧰 **Utilities** | `quote_literal` / `quote_nullable` / `quote_ident`, `elog`, `$_SHARED`. |
+| 🧰 **Utilities** | `quote_literal` / `quote_nullable` / `quote_ident`, `elog`, session-global `$_SHARED` and per-function `$_SD`. |
 | 📦 **Session setup** | Anonymous `DO` blocks, `plphp_modules` autoloading, `plphp.on_init`, and a `plphp.start_proc` hook. |
-| 🧬 **Native jsonb & hstore** | The `jsonb_plphp` and `hstore_plphp` transforms map `jsonb` and `hstore` ⇄ PHP arrays directly. |
+| 🧬 **Native jsonb, hstore & bytea** | The `jsonb_plphp`, `hstore_plphp`, and `bytea_plphp` transforms map `jsonb`/`hstore` ⇄ PHP arrays and `bytea` ⇄ binary strings directly. |
 
 See the [**language reference**](doc/plphp.md) for the full API, the
 [**cookbook**](doc/cookbook.md) for practical, regression-tested recipes, and

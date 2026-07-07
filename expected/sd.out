@@ -1,0 +1,125 @@
+--
+-- $_SD test: per-function static dictionary
+--
+-- $_SD persists across calls to the same function within a session, is private
+-- to each function (unlike the session-global $_SHARED), and is reset when the
+-- function is redefined.
+--
+-- A counter that lives in $_SD across calls.
+CREATE OR REPLACE FUNCTION sd_counter() RETURNS int AS $$
+  if (!isset($_SD['n']))
+      $_SD['n'] = 0;
+  return ++$_SD['n'];
+$$ LANGUAGE plphp;
+SELECT sd_counter();
+ sd_counter 
+------------
+          1
+(1 row)
+
+SELECT sd_counter();
+ sd_counter 
+------------
+          2
+(1 row)
+
+SELECT sd_counter();
+ sd_counter 
+------------
+          3
+(1 row)
+
+-- A second function has its own, independent $_SD.
+CREATE OR REPLACE FUNCTION sd_counter2() RETURNS int AS $$
+  if (!isset($_SD['n']))
+      $_SD['n'] = 100;
+  return ++$_SD['n'];
+$$ LANGUAGE plphp;
+SELECT sd_counter2();
+ sd_counter2 
+-------------
+         101
+(1 row)
+
+SELECT sd_counter2();
+ sd_counter2 
+-------------
+         102
+(1 row)
+
+-- The first counter is unaffected by the second.
+SELECT sd_counter();
+ sd_counter 
+------------
+          4
+(1 row)
+
+-- $_SD is private; $_SHARED is shared. Write both from one function...
+CREATE OR REPLACE FUNCTION sd_writer(text) RETURNS text AS $$
+  global $_SHARED;
+  $_SD['secret'] = $args[0];
+  $_SHARED['public'] = $args[0];
+  return 'ok';
+$$ LANGUAGE plphp;
+-- ...and read them from another. It sees $_SHARED but not the writer's $_SD.
+CREATE OR REPLACE FUNCTION sd_reader() RETURNS text AS $$
+  global $_SHARED;
+  $sd = isset($_SD['secret']) ? $_SD['secret'] : 'none';
+  $sh = isset($_SHARED['public']) ? $_SHARED['public'] : 'none';
+  return "sd=$sd shared=$sh";
+$$ LANGUAGE plphp;
+SELECT sd_writer('xyz');
+ sd_writer 
+-----------
+ ok
+(1 row)
+
+SELECT sd_reader();
+     sd_reader      
+--------------------
+ sd=none shared=xyz
+(1 row)
+
+-- Redefining a function resets its $_SD.
+SELECT sd_counter();
+ sd_counter 
+------------
+          5
+(1 row)
+
+CREATE OR REPLACE FUNCTION sd_counter() RETURNS int AS $$
+  if (!isset($_SD['n']))
+      $_SD['n'] = 0;
+  return ++$_SD['n'];
+$$ LANGUAGE plphp;
+SELECT sd_counter();
+ sd_counter 
+------------
+          1
+(1 row)
+
+-- $_SD can hold structured data, e.g. a cached array.
+CREATE OR REPLACE FUNCTION sd_accumulate(int) RETURNS int[] AS $$
+  if (!isset($_SD['seen']))
+      $_SD['seen'] = array();
+  $_SD['seen'][] = $args[0];
+  return $_SD['seen'];
+$$ LANGUAGE plphp;
+SELECT sd_accumulate(10);
+ sd_accumulate 
+---------------
+ {10}
+(1 row)
+
+SELECT sd_accumulate(20);
+ sd_accumulate 
+---------------
+ {10,20}
+(1 row)
+
+SELECT sd_accumulate(30);
+ sd_accumulate 
+---------------
+ {10,20,30}
+(1 row)
+

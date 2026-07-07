@@ -1,0 +1,6 @@
+# bytea_plphp extension
+comment = 'transform between bytea and PL/php'
+default_version = '1.0'
+module_pathname = '$libdir/bytea_plphp'
+relocatable = true
+requires = 'plphp'
