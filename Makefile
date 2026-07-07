@@ -16,7 +16,7 @@ MODULE_big = plphp
 OBJS = plphp.o plphp_io.o plphp_spi.o
 
 EXTENSION = plphp
-DATA = plphp--2.5.sql plphp--2.0--2.1.sql plphp--2.1--2.2.sql plphp--2.2--2.3.sql plphp--2.3--2.4.sql plphp--2.4--2.5.sql
+DATA = plphp--2.6.sql plphp--2.0--2.1.sql plphp--2.1--2.2.sql plphp--2.2--2.3.sql plphp--2.3--2.4.sql plphp--2.4--2.5.sql plphp--2.5--2.6.sql
 
 # PHP embed SAPI compile/link flags, discovered via php-config.
 PHP_CONFIG ?= php-config
